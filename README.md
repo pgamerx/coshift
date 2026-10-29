@@ -10,10 +10,16 @@
 
 Coshift is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
 
-[![tests](../../actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)
-![license](https://img.shields.io/badge/license-MIT-blue)
+[![npm](https://img.shields.io/npm/v/coshift?color=c96442&label=npm)](https://www.npmjs.com/package/coshift)
+[![homebrew](https://img.shields.io/badge/homebrew-pgamerx%2Ftap-c96442)](https://github.com/pgamerx/homebrew-tap)
+[![tests](https://github.com/pgamerx/coshift/actions/workflows/test.yml/badge.svg)](https://github.com/pgamerx/coshift/actions/workflows/test.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/pgamerx/coshift/blob/main/LICENSE)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![deps](https://img.shields.io/badge/dependencies-none-brightgreen)
+
+```bash
+npx coshift demo     # try it in 10 seconds: the board page with made-up data
+```
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-desktop.png" alt="Coshift board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
@@ -83,7 +89,6 @@ npm install -g coshift              # or install it
 brew install pgamerx/tap/coshift    # or with Homebrew
 ```
 
-[![npm](https://img.shields.io/npm/v/coshift?color=c96442)](https://www.npmjs.com/package/coshift)
 
 Needs Node 18+ and Python 3.9+ (the board is Python with no dependencies). Run `coshift help` for every command.
 
@@ -218,7 +223,13 @@ python3 tests/test-cloud.py     # hosted API + the real context hook, as two clo
 bash mac/tests/test-sandbox.sh  # account switcher, in a throwaway folder
 ```
 
-No dependencies, no network, nothing touches your real data. CI runs them on Linux and macOS.
+No dependencies, no network, nothing touches your real data. CI runs them on Linux and macOS, and also packs the npm package, installs it and smoke-tests the `coshift` command.
+
+### Releasing
+
+1. Bump `version` in `package.json`, commit, then `npm publish` and `git tag vX.Y.Z && git push --tags`.
+2. Wait until `npx coshift@X.Y.Z --version` works (npm takes a few minutes to serve a new version).
+3. In [homebrew-tap](https://github.com/pgamerx/homebrew-tap), update the version in `Formula/coshift.rb` and its `sha256` (`curl -sL <tarball url> | shasum -a 256`).
 
 The animation at the top is code too: `docs/animation` is a small [Remotion](https://www.remotion.dev) project. To change and re-render it: `cd docs/animation && npm i && npm run gif` (needs Node and ffmpeg).
 
@@ -230,4 +241,4 @@ The animation at the top is code too: `docs/animation` is a small [Remotion](htt
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/pgamerx/coshift/blob/main/LICENSE)
