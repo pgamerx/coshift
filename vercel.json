@@ -1,0 +1,4 @@
+{
+  "functions": { "api/index.py": { "includeFiles": "board/**" } },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

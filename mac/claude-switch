@@ -1,0 +1,619 @@
+#!/bin/bash
+# claude-switch — swap the Claude desktop app between named login profiles.
+#
+# Model: the live folder (~/Library/Application Support/Claude) always holds the
+# ACTIVE profile. Inactive profiles live at ~/ClaudeProfiles/<name>/data.
+# A swap is two same-volume renames (mv), never a delete.
+#
+# Personal tool. No network calls. Never reads or prints session contents.
+set -euo pipefail
+
+# ---------- configuration (env overrides exist mainly for sandbox testing) ----------
+LIVE="${CLAUDE_SWITCH_LIVE:-$HOME/Library/Application Support/Claude}"
+PROFILES="${CLAUDE_SWITCH_HOME:-$HOME/ClaudeProfiles}"
+BUNDLE_ID="${CLAUDE_SWITCH_BUNDLE_ID:-com.anthropic.claudefordesktop}"
+APP_PATH="${CLAUDE_SWITCH_APP_PATH:-/Applications/Claude.app}"
+QUIT_TIMEOUT="${CLAUDE_SWITCH_TIMEOUT:-30}"
+NO_LAUNCH="${CLAUDE_SWITCH_NO_LAUNCH:-0}"
+NO_NOTIFY="${CLAUDE_SWITCH_NO_NOTIFY:-0}"
+PROFILE_A="${CLAUDE_SWITCH_A:-main}"
+PROFILE_B="${CLAUDE_SWITCH_B:-second}"
+
+STATE_FILE="$PROFILES/.active"
+LOCK_DIR="$PROFILES/.lock"
+BACKUP_DIR="$PROFILES/_backup"
+SBS_DIR="$PROFILES/_sidebyside"
+MARKER=".claude-switch-profile"   # small file inside each data folder naming its profile
+LOG_FILE="$PROFILES/claude-switch.log"  # action log only; never contains session data
+
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+umask 077
+
+DRY_RUN=0
+LOCKED=0
+
+# ---------- output helpers ----------
+say()  { printf '%s\n' "$*"; }
+warn() { printf 'claude-switch: %s\n' "$*" >&2; }
+die()  { warn "$*"; exit 1; }
+
+log() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -d "$PROFILES" ] || return 0
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# Run a mutating command, or just print it in dry-run mode.
+run() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[dry-run]'; printf ' %q' "$@"; printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
+notify() {
+  [ "$DRY_RUN" = 1 ] && { say "[dry-run] notify: $1"; return 0; }
+  [ "$NO_NOTIFY" = 1 ] && return 0
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Claude Switch"' -e 'end run' "$1" >/dev/null 2>&1 || true
+}
+
+# ---------- validation / state ----------
+valid_name() {
+  case "$1" in
+    ''|_*|.*|*[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 40 ]
+}
+
+require_name() {
+  valid_name "${1:-}" || die "invalid profile name '${1:-}' (use letters, digits, - or _, not starting with _)"
+}
+
+active_profile() {
+  if [ -f "$STATE_FILE" ]; then
+    local n
+    n="$(head -n 1 "$STATE_FILE" | tr -d '[:space:]')"
+    valid_name "$n" && { printf '%s' "$n"; return 0; }
+  fi
+  printf ''
+}
+
+write_state() {
+  local tmp="$STATE_FILE.tmp.$$"
+  if [ "$DRY_RUN" = 1 ]; then say "[dry-run] set active profile -> $1"; return 0; fi
+  printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$STATE_FILE"
+}
+
+write_marker() {  # $1=dir $2=name
+  if [ "$DRY_RUN" = 1 ]; then say "[dry-run] write marker '$2' in $1"; return 0; fi
+  printf '%s\n' "$2" > "$1/$MARKER"
+}
+
+read_marker() {  # $1=dir
+  [ -f "$1/$MARKER" ] && head -n 1 "$1/$MARKER" | tr -d '[:space:]' || true
+}
+
+ensure_home() {
+  if [ ! -d "$PROFILES" ]; then run mkdir -p "$PROFILES"; fi
+  run chmod 700 "$PROFILES"
+}
+
+ensure_profile_dir() {  # $1=name
+  local d="$PROFILES/$1"
+  if [ ! -d "$d" ]; then run mkdir -p "$d"; fi
+  run chmod 700 "$d"
+}
+
+acquire_lock() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  if [ ! -d "$PROFILES" ]; then mkdir -p "$PROFILES"; chmod 700 "$PROFILES"; fi
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    LOCKED=1
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    die "another claude-switch (pid $pid) is running"
+  fi
+  die "stale lock at $LOCK_DIR (previous run crashed?). Check 'claude-switch status', then remove that folder: rmdir \"$LOCK_DIR\" (after deleting the pid file inside it)"
+}
+
+release_lock() {
+  if [ "$LOCKED" = 1 ]; then
+    rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCKED=0
+  fi
+}
+trap release_lock EXIT
+trap 'warn "interrupted"; exit 130' INT TERM HUP
+
+# ---------- process handling ----------
+# PIDs of the DEFAULT Claude instance (the one using the live folder): main
+# process, helpers, crashpad. Side-by-side instances (anything under $PROFILES) are ignored.
+default_pids() {
+  ps -axww -o pid=,command= | while read -r pid cmd; do
+    case "$cmd" in
+      *"$APP_PATH/"*) ;;
+      *) continue ;;
+    esac
+    case "$cmd" in
+      *"$PROFILES/"*) continue ;;
+      *"--user-data-dir=$LIVE"*) printf '%s\n' "$pid" ;;
+      *--user-data-dir=*) continue ;;
+      *) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
+default_main_pid() {
+  ps -axww -o pid=,command= | while read -r pid cmd; do
+    case "$cmd" in
+      "$APP_PATH/Contents/MacOS/"*) ;;
+      *) continue ;;
+    esac
+    case "$cmd" in
+      *--user-data-dir=*) continue ;;
+      *) printf '%s\n' "$pid" ;;
+    esac
+  done | head -n 1 || true
+}
+
+# Any extra instance: an _sidebyside folder or a stored profile's data opened side by side.
+sbs_running() {
+  ps -axww -o command= | grep -F "$APP_PATH/Contents/MacOS/" | grep -F -- "--user-data-dir=$PROFILES/" >/dev/null 2>&1
+}
+
+claude_running() { [ -n "$(default_pids)" ]; }
+
+# Gracefully quits the side-by-side instance using data folder $1 (SIGTERM to its main process) and waits
+# for all its processes to exit. A closed window doesn't quit the app on macOS, so this is how it goes away.
+quit_sbs() {
+  local dir="$1" pid waited=0
+  pid="$(ps -axww -o pid=,command= | awk -v app="$APP_PATH/Contents/MacOS/" -v flag="--user-data-dir=$dir" \
+    'index($0, app) && index($0, flag) { print $1; exit }')"
+  [ -n "$pid" ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then say "[dry-run] close the side-by-side instance using $dir"; return 0; fi
+  say "Closing the side-by-side instance ($dir)..."
+  kill -TERM "$pid" 2>/dev/null || true
+  while ps -axww -o command= | grep -F -- "--user-data-dir=$dir" | grep -F "$APP_PATH/" >/dev/null; do
+    [ "$waited" -ge "$QUIT_TIMEOUT" ] && return 1
+    sleep 1; waited=$((waited + 1))
+  done
+  log "side-by-side closed $dir"
+}
+
+# Any process with a file open under $1?
+dir_in_use() {
+  [ -d "$1" ] || return 1
+  [ -n "$(lsof -nP +D "$1" 2>/dev/null | tail -n +2 | head -n 1)" ]
+}
+
+quit_claude() {
+  if ! claude_running; then
+    say "Claude is not running."
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    say "[dry-run] quit Claude gracefully and wait up to ${QUIT_TIMEOUT}s for all its processes to exit"
+    return 0
+  fi
+  say "Quitting Claude..."
+  if sbs_running; then
+    # With two instances, AppleScript may target the wrong one; signal the
+    # default instance's main process directly (SIGTERM = graceful app quit).
+    local mp; mp="$(default_main_pid)"
+    [ -n "$mp" ] && kill -TERM "$mp" 2>/dev/null || true
+  else
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  fi
+  local waited=0
+  while claude_running; do
+    if [ "$waited" -ge "$QUIT_TIMEOUT" ]; then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Give the OS a moment to close any last file handles.
+  local i=0
+  while dir_in_use "$LIVE" && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
+  if dir_in_use "$LIVE"; then
+    warn "Claude exited, but some process still has files open in the live folder:"
+    lsof -nP +D "$LIVE" 2>/dev/null | awk 'NR>1 {print "  " $1 " (pid " $2 ")"}' | sort -u >&2
+    return 1
+  fi
+  say "Claude has fully exited."
+}
+
+launch_claude() {
+  [ "$NO_LAUNCH" = 1 ] && return 0
+  if [ "$DRY_RUN" = 1 ]; then say "[dry-run] launch Claude"; return 0; fi
+  if sbs_running; then
+    open -n -b "$BUNDLE_ID" || warn "could not launch Claude; open it manually"
+  else
+    open -b "$BUNDLE_ID" || warn "could not launch Claude; open it manually"
+  fi
+}
+
+# ---------- backup ----------
+count_entries() { { find "$1" 2>/dev/null || true; } | wc -l | tr -d ' '; }
+
+latest_backup() {
+  [ -d "$BACKUP_DIR" ] || return 0
+  ls -1d "$BACKUP_DIR"/Claude-* 2>/dev/null | grep -v '\.partial$' | sort | tail -n 1 || true
+}
+
+# APFS clone copy (instant, shares blocks until either side changes).
+make_backup() {
+  [ -d "$LIVE" ] || die "live folder not found: $LIVE"
+  local ts dest tmp
+  ts="$(date '+%Y%m%d-%H%M%S')"
+  dest="$BACKUP_DIR/Claude-$ts"
+  tmp="$dest.partial"
+  if [ "$DRY_RUN" = 1 ]; then
+    say "[dry-run] backup (APFS clone): cp -cpR \"$LIVE\" \"$dest\" and verify entry count"
+    return 0
+  fi
+  [ ! -e "$dest" ] && [ ! -e "$tmp" ] || die "backup target already exists: $dest"
+  mkdir -p "$BACKUP_DIR"; chmod 700 "$BACKUP_DIR"
+  say "Backing up live folder to $dest ..."
+  if ! cp -cpR "$LIVE" "$tmp"; then
+    die "backup copy failed; partial copy left at $tmp (nothing else was changed)"
+  fi
+  local a b
+  a="$(count_entries "$LIVE")"; b="$(count_entries "$tmp")"
+  if [ "$a" != "$b" ]; then
+    die "backup verification failed ($a entries live vs $b in backup); left at $tmp, nothing else changed"
+  fi
+  mv "$tmp" "$dest"
+  chmod 700 "$dest"
+  [ -d "$dest" ] || die "backup not found after creation: $dest"
+  say "Backup verified: $b entries."
+  log "backup created $dest ($b entries)"
+}
+
+ensure_first_backup() {
+  if [ -z "$(latest_backup)" ]; then
+    say "No backup exists yet; making one before the first swap."
+    make_backup
+  fi
+}
+
+# ---------- swap core ----------
+# Preconditions shared by `use` and `new`. Sets CUR.
+preflight_swap() {  # $1=target
+  CUR="$(active_profile)"
+  [ -n "$CUR" ] || die "no active profile recorded. Run 'claude-switch save <name>' first to name the current login."
+  [ -d "$LIVE" ] || die "live folder missing: $LIVE. Not touching anything. If Claude moved its data folder, see README."
+  local m; m="$(read_marker "$LIVE")"
+  if [ -n "$m" ] && [ "$m" != "$CUR" ]; then
+    die "state mismatch: state says '$CUR' is active but the live folder is marked '$m'. Fix with 'claude-switch save $m' if that's right."
+  fi
+  [ ! -e "$PROFILES/$CUR/data" ] || die "unexpected: $PROFILES/$CUR/data already exists while '$CUR' is active. Refusing to overwrite it. Inspect and move it aside manually."
+  [ "$1" != "$CUR" ] || die "'$1' is already active."
+  if [ -d "$PROFILES/$1/data" ]; then
+    m="$(read_marker "$PROFILES/$1/data")"
+    if [ -n "$m" ] && [ "$m" != "$1" ]; then
+      die "profile folder $PROFILES/$1/data is marked '$m', not '$1'. Refusing to swap."
+    fi
+  fi
+  # Renames are only atomic within one volume; refuse otherwise.
+  local dv pv
+  local pdir="$PROFILES"; [ -d "$PROFILES/$CUR" ] && pdir="$PROFILES/$CUR"
+  dv="$(stat -L -f %d "$(dirname "$LIVE")")" || die "cannot stat $(dirname "$LIVE")"
+  pv="$(stat -L -f %d "$pdir")" || die "cannot stat $pdir"
+  [ "$dv" = "$pv" ] || die "live folder and $PROFILES are on different volumes; swaps would not be atomic. Refusing."
+}
+
+# Undo step 2 then step 1. Never overwrites anything; reports where data is.
+rollback() {  # $1=mode $2=target $3=cur_data $4=tgt_data $5=stage(1|2)
+  local mode="$1" target="$2" cur_data="$3" tgt_data="$4" stage="$5"
+  if [ "$stage" = 2 ] && [ -d "$LIVE" ]; then
+    if [ "$mode" = use ]; then
+      if [ -e "$tgt_data" ] || ! mv "$LIVE" "$tgt_data"; then
+        die "ROLLBACK FAILED. Live folder holds '$target' data; '$CUR' is safe at: $cur_data. Run 'claude-switch status' and fix manually (see README)."
+      fi
+    else
+      rm -f "$LIVE/$MARKER"
+      rmdir "$LIVE" 2>/dev/null || die "ROLLBACK FAILED. Something wrote into the new live folder; '$CUR' is safe at: $cur_data. Move the live folder aside and move that back manually."
+    fi
+  fi
+  if [ ! -e "$LIVE" ] && mv "$cur_data" "$LIVE"; then
+    die "rolled back: '$CUR' restored to the live folder. No changes kept."
+  fi
+  die "ROLLBACK FAILED. Your '$CUR' data is safe at: $cur_data — move it back to \"$LIVE\" manually."
+}
+
+# Move the live folder out to the current profile, put the target in place,
+# then record state. Roll back on any failure.
+do_swap() {  # $1=target $2=mode(use|new)
+  local target="$1" mode="$2"
+  local cur_data="$PROFILES/$CUR/data"
+  local tgt_data="$PROFILES/$target/data"
+
+  ensure_first_backup
+
+  # Re-check right before moving: Claude may have relaunched during the backup,
+  # and an undetected app copy could still hold files open.
+  if [ "$DRY_RUN" != 1 ]; then
+    if claude_running || dir_in_use "$LIVE"; then
+      die "Claude (or another process) is using the live folder again. Refusing to swap. Nothing changed."
+    fi
+  fi
+
+  # The three steps take milliseconds; don't let Ctrl-C split them.
+  trap '' INT TERM HUP
+
+  # Step 1: live -> current profile
+  [ ! -e "$cur_data" ] || die "unexpected: $cur_data exists. Nothing changed."
+  if ! run mv "$LIVE" "$cur_data"; then
+    die "step 1 failed (could not move live folder to $cur_data). Nothing changed."
+  fi
+  log "moved live -> $cur_data"
+
+  # Step 2: put target in place (destination must not exist, or BSD mv would nest)
+  local ok=1 m
+  if [ "$DRY_RUN" != 1 ] && [ -e "$LIVE" ]; then
+    warn "something recreated the live folder during the swap."
+    if [ "$mode" = use ]; then
+      die "STOPPED. '$CUR' is safe at $cur_data, '$target' untouched at $tgt_data. Quit Claude, move \"$LIVE\" aside, then move $cur_data back to it."
+    fi
+    ok=0
+  elif [ "$mode" = use ]; then
+    run mv "$tgt_data" "$LIVE" || ok=0
+  else
+    { run mkdir "$LIVE" && run chmod 700 "$LIVE" && write_marker "$LIVE" "$target"; } || ok=0
+  fi
+  if [ "$ok" = 1 ] && [ "$DRY_RUN" != 1 ]; then
+    m="$(read_marker "$LIVE")"
+    { [ -z "$m" ] || [ "$m" = "$target" ]; } && [ ! -e "$tgt_data" ] || ok=0
+    if [ "$ok" = 1 ] && [ -z "$m" ]; then write_marker "$LIVE" "$target" || ok=0; fi
+  fi
+  if [ "$ok" = 0 ]; then
+    warn "step 2 failed or could not be verified; rolling back."
+    rollback "$mode" "$target" "$cur_data" "$tgt_data" 2
+  fi
+  log "placed '$target' at live ($mode)"
+
+  # Step 3: record state
+  if ! write_state "$target"; then
+    warn "step 3 failed (could not write state); rolling back."
+    rollback "$mode" "$target" "$cur_data" "$tgt_data" 2
+  fi
+  log "active profile: $CUR -> $target"
+  trap 'warn "interrupted"; exit 130' INT TERM HUP
+}
+
+# ---------- commands ----------
+cmd_status() {
+  local cur m
+  cur="$(active_profile)"
+  say "Active profile : ${cur:-<none recorded — run 'claude-switch save <name>'>}"
+  if claude_running; then say "Claude running : yes"; else say "Claude running : no"; fi
+  if sbs_running; then say "Side-by-side   : an extra instance is running"; fi
+  if [ -d "$LIVE" ]; then
+    m="$(read_marker "$LIVE")"
+    say "Live folder    : present${m:+ (marked '$m')}"
+    if [ -n "$m" ] && [ -n "$cur" ] && [ "$m" != "$cur" ]; then
+      warn "WARNING: state says '$cur' but live folder is marked '$m'"
+    fi
+  else
+    say "Live folder    : MISSING ($LIVE)"
+  fi
+  if [ -n "$cur" ] && [ -e "$PROFILES/$cur/data" ]; then
+    warn "WARNING: $PROFILES/$cur/data exists although '$cur' is active (needs manual inspection)"
+  fi
+  local b; b="$(latest_backup)"
+  say "Latest backup  : ${b:-none yet}"
+  [ -d "$LOCK_DIR" ] && warn "NOTE: lock folder present: $LOCK_DIR"
+  return 0
+}
+
+cmd_list() {
+  local cur; cur="$(active_profile)"
+  local found=0 d n
+  for d in "$PROFILES"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    valid_name "$n" || continue
+    found=1
+    if [ "$n" = "$cur" ]; then
+      say "* $n  (active, in live folder)"
+    elif [ -d "$d/data" ]; then
+      say "  $n"
+    else
+      say "  $n  (no data — incomplete profile)"
+    fi
+  done
+  [ "$found" = 1 ] || say "No profiles yet. Run 'claude-switch save <name>'."
+}
+
+cmd_save() {
+  local name="${1:-}"; require_name "$name"
+  [ -d "$LIVE" ] || die "live folder not found: $LIVE. Launch Claude and sign in first."
+  local cur; cur="$(active_profile)"
+  if [ -n "$cur" ] && [ "$cur" != "$name" ]; then
+    die "the live folder already belongs to '$cur'. To add another account run: claude-switch new $name   (do NOT sign out of '$cur' in the app — signing out can revoke its saved session)"
+  fi
+  if [ -e "$PROFILES/$name/data" ]; then
+    die "profile '$name' already has stored data at $PROFILES/$name/data; refusing to label the live folder as '$name' too. Use 'claude-switch use $name'."
+  fi
+  acquire_lock
+  ensure_home
+  ensure_profile_dir "$name"
+  write_marker "$LIVE" "$name"
+  write_state "$name"
+  if [ "$cur" = "$name" ]; then
+    say "'$name' is already the active profile; its data is the live folder (it is saved back automatically on every switch)."
+  else
+    say "Saved: the current Claude login is now profile '$name' (active)."
+  fi
+  log "save $name"
+}
+
+cmd_use() {
+  local target="${1:-}"; require_name "$target"
+  local cur; cur="$(active_profile)"
+  if [ -n "$cur" ] && [ "$cur" = "$target" ]; then
+    say "'$target' is already active. Nothing to do."
+    return 0
+  fi
+  [ -d "$PROFILES/$target/data" ] || die "profile '$target' has no stored data. Known profiles: $(cmd_list | tr '\n' ' '). To create it: claude-switch new $target"
+  acquire_lock
+  preflight_swap "$target"
+  if dir_in_use "$PROFILES/$target/data"; then
+    # Usually a side-by-side instance of the target (often with its window already closed): close it first.
+    quit_sbs "$PROFILES/$target/data" || die "the side-by-side instance of '$target' didn't exit within ${QUIT_TIMEOUT}s. Nothing changed."
+    if [ "$DRY_RUN" != 1 ] && dir_in_use "$PROFILES/$target/data"; then
+      die "'$target' data is in use by another process. Quit it first."
+    fi
+  fi
+  ensure_home
+  if ! quit_claude; then
+    die "Claude did not fully exit within ${QUIT_TIMEOUT}s. Refusing to swap. Nothing changed."
+  fi
+  do_swap "$target" use
+  run chmod 700 "$PROFILES/$CUR" "$PROFILES/$target"
+  say "Switched: $CUR -> $target"
+  notify "Active account: $target"
+  launch_claude
+}
+
+cmd_new() {
+  local target="${1:-}"; require_name "$target"
+  [ ! -e "$PROFILES/$target/data" ] || die "profile '$target' already exists. Use: claude-switch use $target"
+  local cur; cur="$(active_profile)"
+  [ "$cur" != "$target" ] || die "'$target' is already the active profile."
+  acquire_lock
+  preflight_swap "$target"
+  ensure_home
+  if ! quit_claude; then
+    die "Claude did not fully exit within ${QUIT_TIMEOUT}s. Refusing to swap. Nothing changed."
+  fi
+  ensure_profile_dir "$target"
+  do_swap "$target" new
+  say "Created fresh profile '$target' (active). '$CUR' is stored safely."
+  say "Claude will open signed out: sign in with the other account. Nothing else to run — it's saved on the next switch."
+  notify "New profile '$target' — sign in now"
+  launch_claude
+}
+
+cmd_toggle() {
+  local cur; cur="$(active_profile)"
+  case "$cur" in
+    "$PROFILE_A") cmd_use "$PROFILE_B" ;;
+    "$PROFILE_B") cmd_use "$PROFILE_A" ;;
+    "") notify "No active profile recorded"; die "no active profile recorded. Run 'claude-switch save $PROFILE_A' first." ;;
+    *) notify "Active profile '$cur' is not $PROFILE_A/$PROFILE_B"; die "active profile '$cur' is neither '$PROFILE_A' nor '$PROFILE_B'." ;;
+  esac
+}
+
+cmd_backup() {
+  acquire_lock
+  ensure_home
+  if claude_running; then
+    warn "Claude is running; the backup may catch databases mid-write. Quit Claude for a clean backup."
+  fi
+  make_backup
+}
+
+# Extra instance next to the main window. If the profile has stored data (it's
+# inactive), open that folder directly: already signed in, no new login needed.
+# Otherwise fall back to a fresh _sidebyside folder that needs a one-time sign-in.
+cmd_side_by_side() {
+  local name="${1:-}" cur; cur="$(active_profile)"
+  if [ -z "$name" ]; then
+    if [ "$cur" = "$PROFILE_B" ]; then name="$PROFILE_A"; else name="$PROFILE_B"; fi
+  fi
+  require_name "$name"
+  [ "$name" != "$cur" ] || die "'$name' is the active profile; it's already open in the main window."
+  acquire_lock
+  ensure_home
+  local dir="$PROFILES/$name/data"
+  if [ ! -d "$dir" ]; then
+    dir="$SBS_DIR/$name"
+    if [ ! -d "$SBS_DIR" ]; then run mkdir -p "$SBS_DIR"; fi
+    run chmod 700 "$SBS_DIR"
+    if [ ! -d "$dir" ]; then run mkdir -p "$dir"; fi
+    run chmod 700 "$dir"
+  fi
+  if ps -axww -o command= | grep -F -- "--user-data-dir=$dir" | grep -F "$APP_PATH/Contents/MacOS/" >/dev/null 2>&1; then
+    say "Side-by-side window for '$name' is already running."
+    return 0
+  fi
+  case "$dir" in
+    "$SBS_DIR/"*) say "Opening a fresh window for '$name' ($dir). First time: sign in there with the other account." ;;
+    *) say "Opening '$name' in a second window, using its stored, signed-in data ($dir)."
+       say "While it's open, use/toggle to '$name' is refused. Quit that window first." ;;
+  esac
+  log "side-by-side $name $dir"
+  run open -n -a "$APP_PATH" --args "--user-data-dir=$dir"
+}
+
+cmd_side_by_side_close() {
+  local name="${1:-}" cur; cur="$(active_profile)"
+  if [ -z "$name" ]; then
+    if [ "$cur" = "$PROFILE_B" ]; then name="$PROFILE_A"; else name="$PROFILE_B"; fi
+  fi
+  require_name "$name"
+  acquire_lock
+  local dir="$PROFILES/$name/data"
+  [ -d "$dir" ] || dir="$SBS_DIR/$name"
+  quit_sbs "$dir" || die "the side-by-side instance of '$name' didn't exit within ${QUIT_TIMEOUT}s."
+  say "No side-by-side instance of '$name' is running now."
+}
+
+usage() {
+  cat <<EOF
+Usage: claude-switch [--dry-run] <command> [args]
+
+  status            show active profile, whether Claude is running, backup info
+  list              list profiles (* = active)
+  save <name>       name the current Claude login as profile <name> (first-time setup)
+  new <name>        quit Claude, store the current profile, start a fresh signed-out profile <name>
+  use <name>        quit Claude, store the current profile, swap in <name>, relaunch
+  toggle            switch between '$PROFILE_A' and '$PROFILE_B'
+  backup            make a timestamped APFS-clone backup of the live folder
+  side-by-side [n]  open the other profile in a second window at the same time (default: the inactive one of $PROFILE_A/$PROFILE_B)
+  side-by-side-close [n]  quit that second instance (closing its window doesn't quit it); use/toggle also do this
+
+  --dry-run         print every action without changing anything
+
+Live folder : $LIVE
+Profiles    : $PROFILES
+EOF
+}
+
+main() {
+  local args=() a
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|-n) DRY_RUN=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) args+=("$a") ;;
+    esac
+  done
+  [ "${#args[@]}" -gt 0 ] || { usage; exit 1; }
+  local cmd="${args[0]}"
+  local arg1="${args[1]:-}"
+  [ "$DRY_RUN" = 1 ] && say "=== DRY RUN: no changes will be made ==="
+  case "$cmd" in
+    status) cmd_status ;;
+    list) cmd_list ;;
+    save) cmd_save "$arg1" ;;
+    new) cmd_new "$arg1" ;;
+    use) cmd_use "$arg1" ;;
+    toggle) cmd_toggle ;;
+    backup) cmd_backup ;;
+    side-by-side|sbs) cmd_side_by_side "$arg1" ;;
+    side-by-side-close|sbs-close) cmd_side_by_side_close "$arg1" ;;
+    help) usage ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+main "$@"

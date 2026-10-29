@@ -1,0 +1,10 @@
+# secrets and local state: never commit
+.env*
+.vercel/
+*.pem
+# python / macOS / build leftovers
+__pycache__/
+*.pyc
+.DS_Store
+*.bak*
+*.old.*

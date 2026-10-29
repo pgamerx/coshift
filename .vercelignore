@@ -1,0 +1,7 @@
+# Only the hosted board is deployed.
+*
+!api
+!api/**
+!board
+!board/**
+!vercel.json

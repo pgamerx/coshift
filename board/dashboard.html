@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baton</title>
+<style>
+:root {
+  --bg: #f6f5f2; --card: #ffffff; --text: #1f1e1c; --muted: #6b6862; --line: #e4e1db;
+  --accent: #c96442; --ok: #2f7d4f; --warn: #b7791f; --stop: #c0392b; --bar: #ece9e3;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1a18; --card: #252421; --text: #ecebe8; --muted: #a29f98; --line: #36342f;
+          --accent: #e0805e; --ok: #5cbf83; --warn: #e0a84a; --stop: #ef6b5b; --bar: #34322d; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 22px; margin: 0; flex: 1; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 28px 0 10px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.muted { color: var(--muted); font-size: 13px; }
+button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+         padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.small { font-size: 12px; padding: 3px 8px; }
+button:disabled { opacity: .5; cursor: default; }
+input, textarea, select { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+                          background: var(--bg); color: var(--text); }
+textarea { min-height: 64px; resize: vertical; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .stop { color: var(--stop); }
+.meter { margin: 8px 0 2px; }
+.meter .lbl { display: flex; justify-content: space-between; font-size: 13px; }
+.track { position: relative; height: 8px; background: var(--bar); border-radius: 99px; overflow: hidden; margin-top: 3px; }
+.fill { height: 100%; border-radius: 99px; }
+.mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); opacity: .35; }
+.tabs { display: flex; gap: 4px; background: var(--bar); padding: 4px; border-radius: 10px; margin-bottom: 4px; }
+.tabs button { flex: 1; border: 0; background: transparent; padding: 8px 4px; border-radius: 8px; font-weight: 500; color: var(--muted); }
+.tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.detail { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.detail.full { display: block; }
+.tabs .n { font-size: 12px; margin-left: 5px; opacity: .8; }
+.task { border-top: 1px solid var(--line); padding: 10px 0; }
+.task:first-of-type { border-top: 0; }
+.task .t { font-weight: 600; }
+.notes { margin: 6px 0 0; padding-left: 16px; font-size: 13px; color: var(--muted); }
+.notes li { margin: 2px 0; }
+details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.copy { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.copy code { flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; white-space: pre-wrap; }
+#toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+         padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+#toast.show { opacity: 1; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Baton</h1>
+    <span id="second" class="muted"></span>
+    <button id="openSecond" class="primary">Open second window</button>
+  </header>
+
+  <details id="setup" class="card">
+    <summary><strong>Starter prompts</strong></summary>
+    <p class="muted">Paste one into a Code session in either Claude window. Give each session its own worktree so their edits don't collide.</p>
+    <p class="muted" style="margin-bottom:0">New session, new goal:</p>
+    <div class="copy"><code id="c1">Use the Baton board. Split this goal into independent tasks with add_task, then claim one and start: [describe the goal]</code><button class="small" data-copy="c1">Copy</button></div>
+    <p class="muted" style="margin-bottom:0">New session, join the work:</p>
+    <div class="copy"><code id="c2">Use the Baton board: report your usage, then claim and work through the open tasks. Leave notes as you go and hand over if you get near your limit.</code><button class="small" data-copy="c2">Copy</button></div>
+    <p class="muted" style="margin-bottom:0">New session, continuing from the saved context (both accounts):</p>
+    <div class="copy"><code id="c4">Run: curl -sS &quot;$BATON_URL/api/help&quot; -H &quot;Authorization: Bearer $BATON_TOKEN&quot; and follow it.
+Start with board resume and continue from your saved context.</code><button class="small" data-copy="c4">Copy</button></div>
+    <p class="muted" style="margin-bottom:0">Session that was already working with its own task list:</p>
+    <div class="copy"><code id="c3">Another Claude account now works on this project in parallel, coordinated through a shared task board. If you have the baton tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.baton/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
+1. Check your limits with get_usage and report them with report_usage.
+2. Move your current task list onto the board: add_task for every item. For finished items pass done_summary with what you did. For the rest, write a detail that says the files/area and what done looks like, so the other account could pick it up cold.
+3. Claim the task you're in the middle of and add_note where you are (done so far, next step, branch).
+4. Leave the other tasks open for the other account. From now on, take new work only with claim_task.</code><button class="small" data-copy="c3">Copy</button></div>
+  </details>
+
+  <h2>Accounts</h2>
+  <div id="accounts" class="grid"></div>
+
+  <h2>Guidance</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">Standing rules for the project. Sessions see them on every board check and when they take a task, until you remove them.</p>
+    <div id="guidance"></div>
+    <div class="row" style="margin:10px 0 8px">
+      <label class="muted" for="gto">For</label>
+      <select id="gto" style="width:auto"></select>
+    </div>
+    <textarea id="gtext" placeholder="e.g. Use pnpm, not npm. Don't touch the payments module. Run the tests before marking a task done."></textarea>
+    <div class="row" style="justify-content:flex-end;margin-top:8px"><button id="gadd" class="primary">Add guidance</button></div>
+  </div>
+
+  <h2>Tell them something</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <label class="muted" for="to">To</label>
+      <select id="to" style="width:auto"></select>
+    </div>
+    <textarea id="msg" placeholder="e.g. Stop after the current task and focus on the login bug next."></textarea>
+    <div class="row" style="justify-content:space-between;margin-top:8px">
+      <span class="muted">Delivered with that account's next board action (each account reads it once).</span>
+      <button id="send" class="primary">Send</button>
+    </div>
+    <details style="margin-top:8px"><summary>Recent messages</summary><div id="messages"></div></details>
+  </div>
+
+  <h2>Sessions</h2>
+  <div class="card"><div id="sessions"></div></div>
+
+  <h2>Tasks</h2>
+  <div class="card" style="margin-bottom:12px">
+    <input id="title" placeholder="New task: what should get done?">
+    <textarea id="detail" placeholder="Details (optional): files or area, what done looks like" style="margin-top:8px"></textarea>
+    <div class="row" style="justify-content:flex-end;margin-top:8px"><button id="add" class="primary">Add task</button></div>
+  </div>
+  <div class="card">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="claimed">In progress<span class="n" id="n-claimed"></span></button>
+      <button role="tab" data-tab="open">Queue<span class="n" id="n-open"></span></button>
+      <button role="tab" data-tab="done">Done<span class="n" id="n-done"></span></button>
+    </div>
+    <div id="claimed" role="tabpanel"></div>
+    <div id="open" role="tabpanel" hidden></div>
+    <div id="done" role="tabpanel" hidden></div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago = m => m < 1 ? "just now" : m < 120 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`;
+const since = t => ago(Math.floor((Date.now() / 1000 - t) / 60));
+let last = "";
+// The hosted board needs the admin key (kept in this browser only); the local page ignores it.
+const auth = () => { try { const k = localStorage.getItem("boardKey"); return k ? { Authorization: "Bearer " + k } : {}; } catch (e) { return {}; } };
+function askKey() {
+  const k = prompt("Board key (the admin key from ~/.baton/cloud-setup.txt):");
+  if (k && k.trim()) { try { localStorage.setItem("boardKey", k.trim()); } catch (e) {} return true; }
+  return false;
+}
+
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+async function post(path, body = {}) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", ...auth() }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ error: "bad response" }));
+  toast(j.ok || ("Error: " + j.error));
+  load(true);
+  return r.ok;
+}
+
+function meter(label, pct, stop, resets) {
+  const color = pct >= stop ? "var(--stop)" : pct >= stop - 15 ? "var(--warn)" : "var(--ok)";
+  return `<div class="meter"><div class="lbl"><span>${label}</span><span>${pct}%${resets ? ` · resets in ${esc(resets)}` : ""}</span></div>
+    <div class="track"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div>
+    <div class="mark" style="left:${stop}%" title="stops at ${stop}%"></div></div></div>`;
+}
+
+function taskHTML(t) {
+  const notes = (t.notes || []).slice(-6).map(n => `<li><b>${esc(n.by)}</b> · ${since(n.t)}: ${esc(n.text)}</li>`).join("");
+  const btns = [`<button class="small" data-act="note" data-id="${t.id}">Add note</button>`];
+  if (t.status !== "open") btns.push(`<button class="small" data-act="reopen" data-id="${t.id}">Reopen</button>`);
+  if (t.status !== "done" && t.status !== "cancelled") btns.push(`<button class="small" data-act="cancel" data-id="${t.id}">Cancel</button>`);
+  return `<div class="task"><div class="t">#${t.id} ${esc(t.title)}</div>
+    ${t.status === "claimed" ? `<div class="muted">${esc(t.owner)} · updated ${since(t.updated)}</div>` : ""}
+    ${t.detail ? `<div class="muted detail${expanded.has(t.id) ? " full" : ""}" data-id="${t.id}" title="Tap to show all">${esc(t.detail)}</div>` : ""}
+    ${notes ? `<details ${t.status === "claimed" ? "open" : ""}><summary>${t.notes.length} note${t.notes.length > 1 ? "s" : ""}</summary><ul class="notes">${notes}</ul></details>` : ""}
+    <div class="row" style="margin-top:6px">${btns.join("")}</div></div>`;
+}
+
+function render(s) {
+  const accts = Object.entries(s.usage);
+  if (!render.done) { $("setup").open = s.sessions.length === 0 && s.tasks.length === 0; render.done = true; }
+  $("accounts").innerHTML = s.accounts.length ? s.accounts.map(u => {
+    const status = u.stop ? `<span class="pill stop">Stopping: ${esc(u.stop)}</span>`
+      : !u.email ? `<span class="pill warn">No session on the board</span>` : `<span class="pill ok">Working</span>`;
+    const name = [u.profile, u.email].filter(Boolean).map(esc).join(" · ");
+    const src = { "usage-app": "from Claude Usage", desktop: "from the Claude app", session: "reported by a session" }[u.source] || "";
+    return `<div class="card"><div class="row" style="justify-content:space-between"><strong>${name}</strong>${status}</div>
+      ${meter("5-hour", u.five_hour_pct, s.stop_5h, u.five_hour_resets)}
+      ${meter("Weekly", u.weekly_pct, s.stop_week, u.weekly_resets)}
+      <div class="muted" style="margin-top:6px">Updated ${ago(u.age_min)}, ${src}${u.age_min > 30 ? ' <span class="warn">(may be out of date)</span>' : ""}</div>
+      ${(c => c ? `<details style="margin-top:6px"><summary>Saved context · ${since(c.t)}</summary>
+        <div class="muted" style="white-space:pre-wrap;margin-top:4px">${esc(c.text)}</div></details>` : "")((s.contexts || {})[u.email] || (s.contexts || {})[u.profile])}</div>`;
+  }).join("") : `<div class="card muted">No usage found yet. It appears once a Claude window or session has checked its limits.</div>`;
+
+  for (const id of ["to", "gto"]) {
+    const sel = $(id), keep = sel.value;
+    sel.innerHTML = `<option value="all">Both accounts</option>` + accts.map(([e]) => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
+    if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+  }
+
+  $("guidance").innerHTML = s.guidance.length ? `<table><tr><th>For</th><th>Guidance</th><th>Seen by</th><th></th></tr>` +
+    s.guidance.map(g => `<tr><td>${esc(g.to === "all" ? "both" : g.to)}</td><td>${esc(g.text)}</td>
+      <td>${g.read_by.length ? esc(g.read_by.join(", ")) : '<span class="warn">not yet</span>'}</td>
+      <td><button class="small" data-act="gremove" data-id="${g.id}">Remove</button></td></tr>`).join("") + `</table>`
+    : `<p class="muted">No guidance yet.</p>`;
+
+  $("messages").innerHTML = s.messages.length ? `<table><tr><th>Sent</th><th>To</th><th>Message</th><th>Read by</th></tr>` +
+    s.messages.slice().reverse().map(m => `<tr><td>${since(m.t)}</td><td>${esc(m.to === "all" ? "both" : m.to)}</td><td>${esc(m.text)}</td>
+      <td>${m.read_by.length ? esc(m.read_by.join(", ")) : '<span class="warn">not yet</span>'}</td></tr>`).join("") + `</table>`
+    : `<p class="muted">None yet.</p>`;
+
+  $("sessions").innerHTML = s.sessions.length ? `<table><tr><th>Account</th><th>Context</th><th>Working on</th><th>Last active</th></tr>` +
+    s.sessions.map(x => `<tr><td>${esc(x.account)}</td><td>${x.context_pct == null ? '<span class="muted">?</span>'
+      : `<span class="${x.context_pct >= s.stop_context ? "stop" : x.context_pct >= s.stop_context - 15 ? "warn" : "ok"}">${x.context_pct}%</span>`}</td>
+      <td>${esc(x.task) || '<span class="muted">nothing claimed</span>'}</td><td>${ago(x.age_min)}</td></tr>`).join("") + `</table>`
+    : `<p class="muted">No sessions have used the board in the last 24 hours.</p>`;
+
+  const by = st => s.tasks.filter(t => t.status === st);
+  $("claimed").innerHTML = by("claimed").map(taskHTML).join("") || `<p class="muted">Nothing in progress.</p>`;
+  $("open").innerHTML = by("open").map(taskHTML).join("") || `<p class="muted">Queue is empty.</p>`;
+  $("done").innerHTML = by("done").slice(-10).reverse().map(taskHTML).join("") || `<p class="muted">Nothing finished yet.</p>`;
+  for (const st of ["claimed", "open", "done"]) $("n-" + st).textContent = by(st).length;
+  if (!setTab.cur) {  // first load: remembered tab, else whatever has work in it
+    let saved = null; try { saved = localStorage.getItem("boardTab"); } catch (e) {}
+    setTab(saved || (by("claimed").length ? "claimed" : "open"));
+  }
+
+  const w = s.second_window;
+  $("second").textContent = w === null ? "" : w ? "Second window is open" : "Second window is closed";
+  $("openSecond").disabled = w === true;
+  $("openSecond").hidden = w === null;  // hosted page: there's no Mac window to open
+}
+
+async function load(force) {
+  try {
+    const r = await fetch("/api/board", { cache: "no-store", headers: auth() });
+    if (r.status === 401 || r.status === 404) { if (!load.asked && (load.asked = true) && askKey()) load(true); return; }
+    const s = await r.json();
+    const key = JSON.stringify(s);
+    if (force || key !== last) { last = key; render(s); }
+  } catch (e) { $("second").textContent = "Board server not reachable"; }
+}
+
+const expanded = new Set();  // survives the 5-second redraws
+document.addEventListener("click", e => {
+  const d = e.target.closest(".detail"); if (!d) return;
+  const id = Number(d.dataset.id);
+  d.classList.toggle("full") ? expanded.add(id) : expanded.delete(id);
+});
+
+function setTab(name) {
+  setTab.cur = name;
+  for (const b of document.querySelectorAll("[data-tab]")) {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on);
+    $(b.dataset.tab).hidden = !on;
+  }
+  try { localStorage.setItem("boardTab", name); } catch (e) {}
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.tab) return setTab(b.dataset.tab);
+  if (b.dataset.copy) { await navigator.clipboard.writeText($(b.dataset.copy).textContent); return toast("Copied"); }
+  if (b.dataset.act === "note") {
+    const text = prompt(`Note for task #${b.dataset.id} (the account working on it sees this with the task):`);
+    if (text && text.trim()) post(`/api/task/${b.dataset.id}/note`, { text });
+  } else if (b.dataset.act === "cancel") {
+    if (confirm(`Cancel task #${b.dataset.id}? It's kept, just taken out of the queue.`)) post(`/api/task/${b.dataset.id}/cancel`);
+  } else if (b.dataset.act === "gremove") {
+    if (confirm("Remove this guidance? Sessions stop seeing it.")) post(`/api/guidance/${b.dataset.id}/remove`);
+  } else if (b.dataset.act === "reopen") {
+    post(`/api/task/${b.dataset.id}/reopen`);
+  }
+});
+$("add").onclick = async () => {
+  if (!$("title").value.trim()) return toast("Give the task a title");
+  if (await post("/api/task", { title: $("title").value, detail: $("detail").value })) { $("title").value = ""; $("detail").value = ""; }
+};
+$("send").onclick = async () => {
+  if (!$("msg").value.trim()) return toast("Write a message first");
+  if (await post("/api/message", { to: $("to").value, text: $("msg").value })) $("msg").value = "";
+};
+$("gadd").onclick = async () => {
+  if (!$("gtext").value.trim()) return toast("Write the guidance first");
+  if (await post("/api/guidance", { to: $("gto").value, text: $("gtext").value })) $("gtext").value = "";
+};
+$("openSecond").onclick = () => post("/api/open-second");
+
+load(true);
+setInterval(load, 5000);
+</script>
+</body>
+</html>
