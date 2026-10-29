@@ -2,6 +2,10 @@
 
 **Run several Claude Code accounts on one project at the same time, and let them hand work to each other instead of to you.**
 
+<p align="center">
+  <img src="docs/img/baton-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
+</p>
+
 Baton is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
 
 [![tests](../../actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)
@@ -202,6 +206,8 @@ bash mac/tests/test-sandbox.sh  # account switcher, in a throwaway folder
 ```
 
 No dependencies, no network, nothing touches your real data. CI runs them on Linux and macOS.
+
+The animation at the top is code too: `docs/animation` is a small [Remotion](https://www.remotion.dev) project. To change and re-render it: `cd docs/animation && npm i && npm run gif` (needs Node and ffmpeg).
 
 ## Limitations
 

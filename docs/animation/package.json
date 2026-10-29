@@ -1,0 +1,15 @@
+{
+  "name": "baton-animation",
+  "private": true,
+  "description": "Source of the README animation. Render: npm i && npm run gif",
+  "scripts": {
+    "render": "remotion render src/index.ts Baton out/baton.mp4",
+    "gif": "npm run render && sh make-gif.sh"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.539",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.539"
+  }
+}
