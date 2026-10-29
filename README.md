@@ -169,7 +169,7 @@ From a cloud session: `curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
 | `BATON_URL`, `BATON_TOKEN` | each cloud environment | | Your board and that account's token. |
-| `BATON_CONTEXT_WINDOW` | cloud environment | `1000000` | The model's context window in tokens, so the hook's percentage is right. |
+| `BATON_CONTEXT_WINDOW` | cloud environment | `200000` | The model's context window in tokens. Set `1000000` if your sessions use a 1M-context model (`/context` shows the size). Too low only stops sessions early; too high means the 70% line never fires. |
 | `BATON_STOP_5H` / `BATON_STOP_WEEK` | Vercel | `85` / `90` | Usage stop lines (%). |
 | `BATON_STOP_CONTEXT` | Vercel | `70` | Context stop line (%). |
 | `BATON_TOKENS` | Vercel | | Token to account map. `setup.py` sets it. |

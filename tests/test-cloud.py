@@ -54,12 +54,12 @@ call("tA", "add_task", {"title": "task one"})
 call("tA", "add_task", {"title": "task two"})
 check("ATLAS claims #1", "#1" in call("tA", "claim_task"))
 
-# the real hook, on a fake transcript at 72% of a 1M window
+# the real hook, on a fake transcript at 72% of the default 200K window
 transcript = os.path.join(TMP, "t.jsonl")
 with open(transcript, "w") as f:
     f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "hi"}}) + "\n")
-    f.write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 20000, "cache_read_input_tokens":
-                                                                   690000, "output_tokens": 10000}}}) + "\n")
+    f.write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 4000, "cache_read_input_tokens":
+                                                                   138000, "output_tokens": 2000}}}) + "\n")
 hook_in = json.dumps({"session_id": "s1", "transcript_path": transcript, "cwd": "/repo/unified-crm"})
 env = dict(os.environ, BATON_URL=URL, BATON_TOKEN="tA", TMPDIR=TMP)
 r = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], input=hook_in, capture_output=True,
@@ -74,6 +74,10 @@ check("hook stays quiet when context hasn't moved", r2.stdout.strip() == "", r2.
 r3 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], input=hook_in, capture_output=True,
                     text=True, env={k: v for k, v in env.items() if k != "BATON_URL"})
 check("hook does nothing without board env vars", r3.returncode == 0 and r3.stdout == "")
+r4 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], capture_output=True, text=True,
+                    input=hook_in.replace('"s1"', '"s1m"'), env=dict(env, BATON_CONTEXT_WINDOW="1000000"))
+s1m = next(x for x in json.loads(get("/api/board", "tX"))["sessions"] if x["id"] == "s1m")
+check("BATON_CONTEXT_WINDOW=1000000: same tokens read 14%, no stop", r4.stdout == "" and s1m["context_pct"] == 14, s1m)
 
 state = json.loads(get("/api/board", "tX"))
 sess = next(x for x in state["sessions"] if x["id"] == "s1")

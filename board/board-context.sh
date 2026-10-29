@@ -3,12 +3,13 @@
 # context window is (from the session transcript) and reports it to the board. At the board's stop line,
 # and whenever the user sent a message from the board page, it passes the board's reply to Claude.
 # Needs BATON_URL and BATON_TOKEN (cloud environment variables); does nothing without them.
-# BATON_CONTEXT_WINDOW sets the window size in tokens (default 1000000).
+# BATON_CONTEXT_WINDOW sets the window size in tokens (default 200000; set 1000000 for 1M-context models).
+# A too-small value only makes the session stop early; a too-large one means the stop line never fires.
 [ -n "$BATON_URL" ] && [ -n "$BATON_TOKEN" ] || exit 0
 exec python3 -c '
 import json, os, sys, urllib.request
 hook = json.load(sys.stdin)
-window = int(os.environ.get("BATON_CONTEXT_WINDOW") or 1000000)
+window = int(os.environ.get("BATON_CONTEXT_WINDOW") or 200000)
 sid = hook.get("session_id") or ""
 used = 0
 try:
