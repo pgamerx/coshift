@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Baton setup. Run from the repo root after `vercel link` and adding Upstash (see README):
+"""Coshift setup. Run from the repo root after `vercel link` and adding Upstash (see README):
 
     python3 scripts/setup.py
 
 It asks for your account names, creates one secret token per account (plus an admin token for the
 page), stores them in Vercel, connects this Mac to the shared board, and writes everything you need
-to paste into each account's cloud environment to ~/.baton/cloud-setup.txt. Safe to re-run: existing
+to paste into each account's cloud environment to ~/.coshift/cloud-setup.txt. Safe to re-run: existing
 tokens are kept unless you pass --new-tokens.
 """
 import json, os, re, secrets, subprocess, sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOME = os.path.expanduser(os.environ.get("BATON_HOME", "~/.baton"))
+HOME = os.path.expanduser(os.environ.get("COSHIFT_HOME", "~/.coshift"))
 sys.path.insert(0, os.path.join(REPO, "board"))
 
 
@@ -51,10 +51,10 @@ def main():
     # 2. tokens to Vercel (the server maps token -> account)
     value = json.dumps({t: n for n, t in tokens.items()})
     for env in ("production", "preview"):
-        r = vercel("env", "add", "BATON_TOKENS", env, "--force", input=value)
+        r = vercel("env", "add", "COSHIFT_TOKENS", env, "--force", input=value)
         if r.returncode:
             sys.exit(f"vercel env add failed ({env}): {r.stderr.strip()[-300:]}")
-    print("Stored BATON_TOKENS in Vercel.")
+    print("Stored COSHIFT_TOKENS in Vercel.")
 
     # 3. this Mac -> the shared board (Redis credentials from Vercel)
     env_file = os.path.join(REPO, ".env.local")
@@ -91,12 +91,12 @@ def main():
         os.symlink(os.path.join(REPO, "board", "board.py"), link)
 
     # 6. usage pusher LaunchAgent file (you load it yourself; see the printed command)
-    plist = os.path.join(HOME, "local.baton.push-usage.plist")
+    plist = os.path.join(HOME, "local.coshift.push-usage.plist")
     write_private(plist, f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key><string>local.baton.push-usage</string>
+	<key>Label</key><string>local.coshift.push-usage</string>
 	<key>ProgramArguments</key>
 	<array><string>/usr/bin/python3</string><string>{link}</string><string>push-usage</string></array>
 	<key>StartInterval</key><integer>60</integer>
@@ -109,11 +109,11 @@ def main():
 
     # 7. what to paste where
     host = url.split("//")[-1].split("/")[0]
-    lines = [f"BATON - CLOUD SETUP (private: tokens are passwords for your board)\n",
+    lines = [f"COSHIFT - CLOUD SETUP (private: tokens are passwords for your board)\n",
              f"Board page: {url}\n  Admin key (the page asks once): {tokens['admin']}\n",
              "In claude.ai/code, open each account's cloud environment settings:\n"]
     for n in accounts:
-        lines.append(f"{n} -> Environment variables:\nBATON_URL={url}\nBATON_TOKEN={tokens[n]}\n")
+        lines.append(f"{n} -> Environment variables:\nCOSHIFT_URL={url}\nCOSHIFT_TOKEN={tokens[n]}\n")
     lines.append(f"Every environment -> Network access: allow {host}\n")
     setup_txt = os.path.join(HOME, "cloud-setup.txt")
     write_private(setup_txt, "\n".join(lines))
@@ -122,9 +122,9 @@ def main():
 Done. Next:
   1. Deploy:                 vercel deploy --prod
   2. Cloud environments:     cat {setup_txt}
-  3. Live usage (optional):  cp {plist} ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.baton.push-usage.plist
+  3. Live usage (optional):  cp {plist} ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.coshift.push-usage.plist
   4. Desktop sessions (optional):
-                             claude mcp add --scope user baton -- /usr/bin/python3 {link} serve
+                             claude mcp add --scope user coshift -- /usr/bin/python3 {link} serve
   5. In each project repo, have one session install the context hook (README, setup step 3).""")
 
 

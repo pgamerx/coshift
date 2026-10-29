@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Baton</title>
+<title>Coshift</title>
 <style>
 :root {
   --bg: #f6f5f2; --card: #ffffff; --text: #1f1e1c; --muted: #6b6862; --line: #e4e1db;
@@ -64,7 +64,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: 0; }
 <body>
 <main>
   <header>
-    <h1>Baton</h1>
+    <h1>Coshift</h1>
     <span id="second" class="muted"></span>
     <button id="openSecond" class="primary">Open second window</button>
   </header>
@@ -73,14 +73,14 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: 0; }
     <summary><strong>Starter prompts</strong></summary>
     <p class="muted">Paste one into a Code session in either Claude window. Give each session its own worktree so their edits don't collide.</p>
     <p class="muted" style="margin-bottom:0">New session, new goal:</p>
-    <div class="copy"><code id="c1">Use the Baton board. Split this goal into independent tasks with add_task, then claim one and start: [describe the goal]</code><button class="small" data-copy="c1">Copy</button></div>
+    <div class="copy"><code id="c1">Use the Coshift board. Split this goal into independent tasks with add_task, then claim one and start: [describe the goal]</code><button class="small" data-copy="c1">Copy</button></div>
     <p class="muted" style="margin-bottom:0">New session, join the work:</p>
-    <div class="copy"><code id="c2">Use the Baton board: report your usage, then claim and work through the open tasks. Leave notes as you go and hand over if you get near your limit.</code><button class="small" data-copy="c2">Copy</button></div>
+    <div class="copy"><code id="c2">Use the Coshift board: report your usage, then claim and work through the open tasks. Leave notes as you go and hand over if you get near your limit.</code><button class="small" data-copy="c2">Copy</button></div>
     <p class="muted" style="margin-bottom:0">New session, continuing from the saved context (both accounts):</p>
-    <div class="copy"><code id="c4">Run: curl -sS &quot;$BATON_URL/api/help&quot; -H &quot;Authorization: Bearer $BATON_TOKEN&quot; and follow it.
+    <div class="copy"><code id="c4">Run: curl -sS &quot;$COSHIFT_URL/api/help&quot; -H &quot;Authorization: Bearer $COSHIFT_TOKEN&quot; and follow it.
 Start with board resume and continue from your saved context.</code><button class="small" data-copy="c4">Copy</button></div>
     <p class="muted" style="margin-bottom:0">Session that was already working with its own task list:</p>
-    <div class="copy"><code id="c3">Another Claude account now works on this project in parallel, coordinated through a shared task board. If you have the baton tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.baton/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
+    <div class="copy"><code id="c3">Another Claude account now works on this project in parallel, coordinated through a shared task board. If you have the coshift tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.coshift/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
 1. Check your limits with get_usage and report them with report_usage.
 2. Move your current task list onto the board: add_task for every item. For finished items pass done_summary with what you did. For the rest, write a detail that says the files/area and what done looks like, so the other account could pick it up cold.
 3. Claim the task you're in the middle of and add_note where you are (done so far, next step, branch).
@@ -147,7 +147,7 @@ let last = "";
 // The hosted board needs the admin key (kept in this browser only); the local page ignores it.
 const auth = () => { try { const k = localStorage.getItem("boardKey"); return k ? { Authorization: "Bearer " + k } : {}; } catch (e) { return {}; } };
 function askKey() {
-  const k = prompt("Board key (the admin key from ~/.baton/cloud-setup.txt):");
+  const k = prompt("Board key (the admin key from ~/.coshift/cloud-setup.txt):");
   if (k && k.trim()) { try { localStorage.setItem("boardKey", k.trim()); } catch (e) {} return true; }
   return false;
 }

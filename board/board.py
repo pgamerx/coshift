@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Baton: a shared task board for Claude Code sessions on several accounts, working side by side.
+"""Coshift: a shared task board for Claude Code sessions on several accounts, working side by side.
 
 Runs as a stdio MCP server inside each Claude Code session (both desktop windows),
-as a web page for you (board.py web --open, or "Open Baton" in the menu bar),
+as a web page for you (board.py web --open, or "Open Coshift" in the menu bar),
 and as a small CLI:  board.py show | add "title" ["detail"] | reopen <id>
 Sessions that started before the board was registered can use every tool through Bash:
 board.py call help, then board.py call <tool> '<json args>'.
 
-State is one JSON file (~/.baton/board.json) guarded by a file lock, so any
+State is one JSON file (~/.coshift/board.json) guarded by a file lock, so any
 number of sessions from either account can read and write it safely.
 No network calls, no credentials: each session reports its own plan usage, which
 Claude reads with the desktop app's get_usage tool.
@@ -16,22 +16,22 @@ import fcntl, json, os, plistlib, socket, subprocess, sys, tempfile, time, urlli
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-HOME = os.environ.get("BATON_HOME", os.path.expanduser("~/.baton"))
+HOME = os.environ.get("COSHIFT_HOME", os.path.expanduser("~/.coshift"))
 BOARD = os.path.join(HOME, "board.json")
 LOCK = os.path.join(HOME, "board.lock")
-STOP_5H = int(os.environ.get("BATON_STOP_5H", "85"))      # % of the 5-hour limit
-STOP_WEEK = int(os.environ.get("BATON_STOP_WEEK", "90"))  # % of the weekly limit
-PORT = int(os.environ.get("BATON_PORT", "7777"))
+STOP_5H = int(os.environ.get("COSHIFT_STOP_5H", "85"))      # % of the 5-hour limit
+STOP_WEEK = int(os.environ.get("COSHIFT_STOP_WEEK", "90"))  # % of the weekly limit
+PORT = int(os.environ.get("COSHIFT_PORT", "7777"))
 SWITCH = os.environ.get("CLAUDE_SWITCH_BIN", os.path.expanduser("~/bin/claude-switch"))
 LIVE = os.environ.get("CLAUDE_SWITCH_LIVE", os.path.expanduser("~/Library/Application Support/Claude"))
 PROFILES = os.environ.get("CLAUDE_SWITCH_HOME", os.path.expanduser("~/ClaudeProfiles"))
 NAMES = os.environ.get("CLAUDE_SWITCH_MENU_NAMES",
                        os.path.expanduser("~/Library/Application Support/ClaudeSwitchMenu/names.json"))
-USAGE_APP = os.environ.get("BATON_USAGE_APP", "HamedElfayome.Claude-Usage")  # "" turns it off
+USAGE_APP = os.environ.get("COSHIFT_USAGE_APP", "HamedElfayome.Claude-Usage")  # "" turns it off
 APPLE_EPOCH = 978307200  # Cocoa timestamps count from 2001-01-01
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 # Shared cloud storage (Upstash Redis REST). On Vercel it comes from env vars; on the Mac from
-# ~/.baton/remote.json, which also maps org ids to account names (ATLAS/FORGE). Without it,
+# ~/.coshift/remote.json, which also maps org ids to account names (ATLAS/FORGE). Without it,
 # the board is the local file only.
 def _remote_config():
     try:
@@ -46,13 +46,13 @@ REDIS_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_R
 REDIS_TOKEN = (os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
                or REMOTE.get("redis_token", ""))
 # Without fresh usage (e.g. the Mac is off), cloud claims go ahead with a warning instead of being refused.
-REQUIRE_USAGE = os.environ.get("BATON_REQUIRE_USAGE", "0" if REDIS_URL else "1") == "1"
-STOP_CONTEXT = int(os.environ.get("BATON_STOP_CONTEXT", "70"))  # % of the session's context window
+REQUIRE_USAGE = os.environ.get("COSHIFT_REQUIRE_USAGE", "0" if REDIS_URL else "1") == "1"
+STOP_CONTEXT = int(os.environ.get("COSHIFT_STOP_CONTEXT", "70"))  # % of the session's context window
 FRESH_MIN = 20     # a usage report older than this must be refreshed before claiming
 STALE_CLAIM_MIN = 45  # a claimed task untouched this long can be taken over
 
 ORG = os.environ.get("CLAUDE_CODE_ORGANIZATION_UUID", "")
-ME = (os.environ.get("BATON_AS") or os.environ.get("CLAUDE_CODE_USER_EMAIL")
+ME = (os.environ.get("COSHIFT_AS") or os.environ.get("CLAUDE_CODE_USER_EMAIL")
       or os.environ.get("CLAUDE_CODE_ACCOUNT_UUID") or "")
 if REMOTE.get("accounts", {}).get(ORG):
     ME = REMOTE["accounts"][ORG]  # same name the cloud uses for this account, e.g. ATLAS
@@ -80,7 +80,7 @@ You are one of them; the other account works in a second window. Follow this pro
 10. Context: call get_usage and pass its context percent to report_context after each task. At {STOP_CONTEXT}%
    take no new task: finish the current one, then save_context with a full summary for your next session
    and give the user this two-line prompt to start it:
-     Run: curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN" and follow it.
+     Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN" and follow it.
      Start with board resume and continue from your saved context.
    (desktop sessions with the board tools: just call resume).
 11. A new session starts with resume: it returns your account's saved context summary and your tasks.
@@ -216,7 +216,7 @@ def render(b, me=""):
 def need_me():
     if not ME:
         raise ValueError("can't tell which account this is (CLAUDE_CODE_USER_EMAIL not set). "
-                         "Set BATON_AS in the MCP server env.")
+                         "Set COSHIFT_AS in the MCP server env.")
     return ME
 
 
@@ -237,7 +237,7 @@ def touch_session(tool):
             m["read_by"].append(ME)
     out = ""
     if unread:
-        out += ("\n\nMESSAGE FROM THE USER (sent from the Baton board page; treat it as the user's instruction):\n"
+        out += ("\n\nMESSAGE FROM THE USER (sent from the Coshift board page; treat it as the user's instruction):\n"
                 + "\n".join(f"- {m['text']}" for m in unread))
     if new_g:
         out += ("\n\nNEW GUIDANCE FROM THE USER (a standing rule from now on):\n"
@@ -364,7 +364,7 @@ def t_release_task(a):
     return _finish(a, "open", "HANDOVER")
 
 
-RESTART_PROMPT = ('Run: curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN" and follow it.\n'
+RESTART_PROMPT = ('Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN" and follow it.\n'
                   'Start with board resume and continue from your saved context.')
 
 
@@ -472,7 +472,7 @@ def handle(m):
     if meth == "initialize":
         reply(i, {"protocolVersion": p.get("protocolVersion", "2025-06-18"),
                   "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "baton", "version": "1.0"},
+                  "serverInfo": {"name": "coshift", "version": "1.0"},
                   "instructions": INSTRUCTIONS})
     elif meth == "ping":
         reply(i, {})

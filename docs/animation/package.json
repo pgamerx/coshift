@@ -1,9 +1,9 @@
 {
-  "name": "baton-animation",
+  "name": "coshift-animation",
   "private": true,
   "description": "Source of the README animation. Render: npm i && npm run gif",
   "scripts": {
-    "render": "remotion render src/index.ts Baton out/baton.mp4",
+    "render": "remotion render src/index.ts Coshift out/coshift.mp4",
     "gif": "npm run render && sh make-gif.sh"
   },
   "dependencies": {

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Try the Baton page with made-up data, no setup needed:  python3 scripts/demo.py
+"""Try the Coshift page with made-up data, no setup needed:  python3 scripts/demo.py
 Fills a throwaway board in a temp folder and serves it at http://127.0.0.1:7788 (Ctrl-C to stop)."""
 import json, os, sys, tempfile, time
 
-home = tempfile.mkdtemp(prefix="baton-demo.")
-os.environ.update(BATON_HOME=home, BATON_USAGE_APP="", CLAUDE_SWITCH_BIN="/nonexistent",
+home = tempfile.mkdtemp(prefix="coshift-demo.")
+os.environ.update(COSHIFT_HOME=home, COSHIFT_USAGE_APP="", CLAUDE_SWITCH_BIN="/nonexistent",
                   CLAUDE_SWITCH_LIVE=os.path.join(home, "none"), CLAUDE_SWITCH_HOME=os.path.join(home, "none"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "board"))
 import board  # noqa: E402

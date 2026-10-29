@@ -3,15 +3,15 @@
 import json, os, subprocess, sys, tempfile, threading
 
 BOARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board", "board.py")
-HOME = tempfile.mkdtemp(prefix="baton-test.")
-os.environ["BATON_USAGE_APP"] = ""  # never read the real Claude Usage app in tests
+HOME = tempfile.mkdtemp(prefix="coshift-test.")
+os.environ["COSHIFT_USAGE_APP"] = ""  # never read the real Claude Usage app in tests
 FAILS = 0
 
 
 class Account:
     def __init__(self, email):
-        env = dict(os.environ, BATON_HOME=HOME, CLAUDE_CODE_USER_EMAIL=email, CLAUDE_CODE_SESSION_ID="s-" + email)
-        env.pop("BATON_AS", None)
+        env = dict(os.environ, COSHIFT_HOME=HOME, CLAUDE_CODE_USER_EMAIL=email, CLAUDE_CODE_SESSION_ID="s-" + email)
+        env.pop("COSHIFT_AS", None)
         env.pop("CLAUDE_CODE_ORGANIZATION_UUID", None)  # else real usage on this Mac counts as a report
         self.p = subprocess.Popen([sys.executable, BOARD, "serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, env=env)
@@ -92,7 +92,7 @@ check("50 concurrent adds, no lost writes", len(board["tasks"]) == 53 and board[
 status, _ = b.call("board_status")
 check("status shows both accounts and STOP flag", "a@x.com" in status and "b@x.com" in status and "STOP" in status, status)
 
-out = subprocess.run([sys.executable, BOARD, "show"], env=dict(os.environ, BATON_HOME=HOME),
+out = subprocess.run([sys.executable, BOARD, "show"], env=dict(os.environ, COSHIFT_HOME=HOME),
                      capture_output=True, text=True).stdout
 check("CLI show works", "Claimed" in out and "Open" in out, out)
 
@@ -101,7 +101,7 @@ import socket, time, urllib.request, urllib.error
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); PORT = s.getsockname()[1]
 web = subprocess.Popen([sys.executable, BOARD, "web", str(PORT)],
-                       env=dict(os.environ, BATON_HOME=HOME, CLAUDE_SWITCH_BIN="/nonexistent"))
+                       env=dict(os.environ, COSHIFT_HOME=HOME, CLAUDE_SWITCH_BIN="/nonexistent"))
 for _ in range(50):
     try:
         socket.create_connection(("127.0.0.1", PORT), 0.2).close(); break
@@ -122,7 +122,7 @@ def http(path, body=None, headers=None):
 
 
 code, page = http("/")
-check("web page served", code == 200 and "Baton" in page, code)
+check("web page served", code == 200 and "Coshift" in page, code)
 code, st = http("/api/board")
 st = json.loads(st)
 check("board API lists both sessions", {x["account"] for x in st["sessions"]} == {"a@x.com", "b@x.com"}, st["sessions"])
@@ -172,18 +172,18 @@ check("removed guidance no longer shown", "use pnpm" not in txt, txt)
 txt, _ = a.call("add_task", title="old work", done_summary="built the schema")
 check("add_task with done_summary records it as done", "(done)" in txt, txt)
 r = subprocess.run([sys.executable, BOARD, "call", "add_task", '{"title": "from bash"}'], capture_output=True, text=True,
-                   env=dict(os.environ, BATON_HOME=HOME, CLAUDE_CODE_USER_EMAIL="b@x.com", CLAUDE_CODE_SESSION_ID="s-bash"))
+                   env=dict(os.environ, COSHIFT_HOME=HOME, CLAUDE_CODE_USER_EMAIL="b@x.com", CLAUDE_CODE_SESSION_ID="s-bash"))
 st = json.loads(http("/api/board")[1])
 check("board.py call works as the session's account", r.returncode == 0 and st["tasks"][-1]["created_by"] == "b@x.com"
       and any(x["id"] == "s-bash" for x in st["sessions"]), r.stdout + r.stderr)
-r = subprocess.run([sys.executable, BOARD, "call", "help"], capture_output=True, text=True, env=dict(os.environ, BATON_HOME=HOME))
+r = subprocess.run([sys.executable, BOARD, "call", "help"], capture_output=True, text=True, env=dict(os.environ, COSHIFT_HOME=HOME))
 check("call help lists the tools", "claim_task" in r.stdout and "done_summary" in r.stdout, r.stdout[:200])
 web.terminate(); web.wait()
 
 # ---- accounts come from the app's own usage files too, merged with session reports by org ----
 sys.path.insert(0, os.path.dirname(BOARD))
 import importlib
-fake = tempfile.mkdtemp(prefix="baton-apps.")
+fake = tempfile.mkdtemp(prefix="coshift-apps.")
 for folder, org, fh, sd, t in (("live", "org-a", 5, 20, 1000), ("Profiles/second/data", "org-b", 0, 86, time.time())):
     os.makedirs(os.path.join(fake, folder))
     json.dump({"version": 2, "samples": [{"t": t * 1000, "org": org, "u": {"fh": fh, "sd": sd}}]},
@@ -191,7 +191,7 @@ for folder, org, fh, sd, t in (("live", "org-a", 5, 20, 1000), ("Profiles/second
 open(os.path.join(fake, "Profiles", ".active"), "w").write("main")
 json.dump({"main": {"name": "Work"}}, open(os.path.join(fake, "names.json"), "w"))
 os.environ.update(CLAUDE_SWITCH_LIVE=os.path.join(fake, "live"), CLAUDE_SWITCH_HOME=os.path.join(fake, "Profiles"),
-                  CLAUDE_SWITCH_MENU_NAMES=os.path.join(fake, "names.json"), BATON_HOME=HOME)
+                  CLAUDE_SWITCH_MENU_NAMES=os.path.join(fake, "names.json"), COSHIFT_HOME=HOME)
 bmod = importlib.import_module("board")
 cards = bmod.accounts_view({})
 check("both accounts shown with no session reports", sorted(c["profile"] for c in cards) == ["Work", "second"], cards)

@@ -1,15 +1,15 @@
 #!/bin/sh
-# Claude Code PostToolUse hook for the Baton board. After tool calls it reads how full this session's
+# Claude Code PostToolUse hook for the Coshift board. After tool calls it reads how full this session's
 # context window is (from the session transcript) and reports it to the board. At the board's stop line,
 # and whenever the user sent a message from the board page, it passes the board's reply to Claude.
-# Needs BATON_URL and BATON_TOKEN (cloud environment variables); does nothing without them.
-# BATON_CONTEXT_WINDOW sets the window size in tokens (default 200000; set 1000000 for 1M-context models).
+# Needs COSHIFT_URL and COSHIFT_TOKEN (cloud environment variables); does nothing without them.
+# COSHIFT_CONTEXT_WINDOW sets the window size in tokens (default 200000; set 1000000 for 1M-context models).
 # A too-small value only makes the session stop early; a too-large one means the stop line never fires.
-[ -n "$BATON_URL" ] && [ -n "$BATON_TOKEN" ] || exit 0
+[ -n "$COSHIFT_URL" ] && [ -n "$COSHIFT_TOKEN" ] || exit 0
 exec python3 -c '
 import json, os, sys, urllib.request
 hook = json.load(sys.stdin)
-window = int(os.environ.get("BATON_CONTEXT_WINDOW") or 200000)
+window = int(os.environ.get("COSHIFT_CONTEXT_WINDOW") or 200000)
 sid = hook.get("session_id") or ""
 used = 0
 try:
@@ -39,9 +39,9 @@ if abs(pct - last) < 2:  # report every 2 points, not after every tool call
     sys.exit(0)
 open(state, "w").write(str(pct))
 req = urllib.request.Request(
-    os.environ["BATON_URL"].rstrip("/") + "/api/call/report_context",
+    os.environ["COSHIFT_URL"].rstrip("/") + "/api/call/report_context",
     data=json.dumps({"pct": pct, "tokens": used}).encode(), method="POST",
-    headers={"Authorization": "Bearer " + os.environ["BATON_TOKEN"], "Content-Type": "application/json",
+    headers={"Authorization": "Bearer " + os.environ["COSHIFT_TOKEN"], "Content-Type": "application/json",
              "X-Session": sid, "X-Repo": os.path.basename(hook.get("cwd") or "")})
 try:
     text = urllib.request.urlopen(req, timeout=5).read().decode()
@@ -49,5 +49,5 @@ except Exception:
     sys.exit(0)  # never block the session because the board is unreachable
 if text.startswith("CONTEXT LIMIT") or "FROM THE USER" in text:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
-                                             "additionalContext": "BATON: " + text}}))
+                                             "additionalContext": "COSHIFT: " + text}}))
 '

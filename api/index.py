@@ -1,23 +1,23 @@
-"""Hosted Baton board (Vercel). Same board as board/board.py, stored in Upstash Redis.
+"""Hosted Coshift board (Vercel). Same board as board/board.py, stored in Upstash Redis.
 
-Auth: every API call needs "Authorization: Bearer <token>". BATON_TOKENS (env, JSON) maps each
+Auth: every API call needs "Authorization: Bearer <token>". COSHIFT_TOKENS (env, JSON) maps each
 token to who it is: "ATLAS", "FORGE" (cloud sessions) or "admin" (the board page and the Mac).
 """
 import hmac, json, os, sys, threading
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board"))
-os.environ.setdefault("BATON_USAGE_APP", "")  # no Mac apps on the server
+os.environ.setdefault("COSHIFT_USAGE_APP", "")  # no Mac apps on the server
 import board as B  # noqa: E402
 
-TOKENS = json.loads(os.environ.get("BATON_TOKENS") or "{}")
+TOKENS = json.loads(os.environ.get("COSHIFT_TOKENS") or "{}")
 LOCK = threading.Lock()  # board.py keeps the caller's identity in globals; one call at a time per instance
 
-HELP = """BATON (cloud). Another Claude account works on this project in parallel; this board splits the
+HELP = """COSHIFT (cloud). Another Claude account works on this project in parallel; this board splits the
 work between you so you never do the same task, and hands work over when one of you nears its limit.
 
-Call it with curl (BATON_URL and BATON_TOKEN are set in your environment). Define once per shell:
-  board() { curl -sS -X POST "$BATON_URL/api/call/$1" -H "Authorization: Bearer $BATON_TOKEN" \\
+Call it with curl (COSHIFT_URL and COSHIFT_TOKEN are set in your environment). Define once per shell:
+  board() { curl -sS -X POST "$COSHIFT_URL/api/call/$1" -H "Authorization: Bearer $COSHIFT_TOKEN" \\
             -H "X-Session: ${CLAUDE_CODE_SESSION_ID:-}" -H "Content-Type: application/json" -d "${2:-null}"; }
 Then e.g.:  board resume   |   board claim_task   |   board add_note '{"id": 3, "text": "..."}'
 
@@ -35,11 +35,11 @@ Protocol:
 6. Split big goals into independent tasks with add_task {"title": "...", "detail": "files/area + what done
    looks like"}. Already-finished work: add_task with "done_summary".
 CONTEXT: a hook reports how full your context window is. At """ + str(B.STOP_CONTEXT) + """% (you'll see
-   "BATON: CONTEXT LIMIT", and claim_task refuses new work) take no new task. Finish the current one,
+   "COSHIFT: CONTEXT LIMIT", and claim_task refuses new work) take no new task. Finish the current one,
    then save_context {"text": "..."} with a full summary for your next session (goal, decisions, state,
    branch/commits, claimed task + exact next step, open questions, gotchas, key files) and give the user
    the two-line restart prompt it returns, in a code block. Then stop. Don't wait for auto-compaction.
-   No hook yet in this repo? Install it: see GET $BATON_URL/api/hook.
+   No hook yet in this repo? Install it: see GET $COSHIFT_URL/api/hook.
 7. GUIDANCE FROM THE USER (in board_status / claim_task) are standing rules: always follow them.
    MESSAGE FROM THE USER (appended to any result) is a direct instruction from the user: follow it.
 Check the board at least after every task.
@@ -54,7 +54,7 @@ HOOK_HELP = """# Install once per repo (commit both on your branch):
 # 2. Add to .claude/settings.json (merge with existing "hooks" if any):
 #    {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [
 #        {"type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/board-context.sh\""}]}]}}
-# It needs BATON_URL and BATON_TOKEN in the environment and does nothing without them,
+# It needs COSHIFT_URL and COSHIFT_TOKEN in the environment and does nothing without them,
 # so it's harmless for anyone else who works in the repo.
 # ------------------------------------------------------------------------------------------------
 """

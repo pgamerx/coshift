@@ -1,12 +1,14 @@
-# Baton
+# Coshift
 
 **Run several Claude Code accounts on one project at the same time, and let them hand work to each other instead of to you.**
 
+<sub>Formerly called Baton.</sub>
+
 <p align="center">
-  <img src="docs/img/baton-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
+  <img src="docs/img/coshift-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
 </p>
 
-Baton is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
+Coshift is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
 
 [![tests](../../actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -14,10 +16,10 @@ Baton is a small shared task board that your Claude Code sessions use themselves
 ![deps](https://img.shields.io/badge/dependencies-none-brightgreen)
 
 <p align="center">
-  <img src="docs/img/board-desktop.png" alt="Baton board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
+  <img src="docs/img/board-desktop.png" alt="Coshift board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
   &nbsp;
-  <img src="docs/img/board-mobile-accounts.jpg" alt="Baton on a phone: account cards" width="17%">
-  <img src="docs/img/board-mobile-tasks.jpg" alt="Baton on a phone: sessions and task tabs" width="17%">
+  <img src="docs/img/board-mobile-accounts.jpg" alt="Coshift on a phone: account cards" width="17%">
+  <img src="docs/img/board-mobile-tasks.jpg" alt="Coshift on a phone: sessions and task tabs" width="17%">
 </p>
 
 <p align="center"><sub>The board page (demo data). It's built for checking from your phone.</sub></p>
@@ -41,7 +43,7 @@ flowchart LR
         A["ATLAS session"]
         F["FORGE session"]
     end
-    A -- "claim, notes, save_context<br/>(ATLAS token)" --> B[("Baton board<br/>Vercel + Upstash Redis")]
+    A -- "claim, notes, save_context<br/>(ATLAS token)" --> B[("Coshift board<br/>Vercel + Upstash Redis")]
     F -- "claim, notes, save_context<br/>(FORGE token)" --> B
     HK["context hook<br/>(runs after tool calls)"] -. "context %" .-> B
     M["Your Mac<br/>(optional usage pusher)"] -- "5-hour and weekly %<br/>every minute" --> B
@@ -54,7 +56,7 @@ A typical day, with two accounts:
 sequenceDiagram
     participant Y as You
     participant A as ATLAS session
-    participant B as Baton board
+    participant B as Coshift board
     participant F as FORGE session
     participant N as New ATLAS session
     Y->>A: "Split the checkout work into tasks and start"
@@ -76,7 +78,7 @@ The account names are yours to pick (`ATLAS` and `FORGE` here). The board identi
 ## Try it without setting anything up
 
 ```bash
-git clone https://github.com/pgamerx/baton && cd baton
+git clone https://github.com/pgamerx/coshift && cd coshift
 python3 scripts/demo.py        # then open http://127.0.0.1:7788
 ```
 
@@ -86,45 +88,45 @@ It fills a throwaway board with made-up data. Python 3.9+ and nothing else.
 
 You need: a [Vercel](https://vercel.com) account (the free plan is fine), the [Vercel CLI](https://vercel.com/docs/cli), Python 3.9+, and two or more Claude Code accounts or sessions.
 
-> **Is running more than one account allowed?** Check [Anthropic's terms](https://www.anthropic.com/legal/consumer-terms) for your plan. Baton doesn't change any limits. It only coordinates the sessions you already run.
+> **Is running more than one account allowed?** Check [Anthropic's terms](https://www.anthropic.com/legal/consumer-terms) for your plan. Coshift doesn't change any limits. It only coordinates the sessions you already run.
 
 **1. Deploy the board**
 
 ```bash
-git clone https://github.com/pgamerx/baton && cd baton
+git clone https://github.com/pgamerx/coshift && cd coshift
 vercel link                                   # create a Vercel project
 vercel integration add upstash/upstash-kv     # free Redis for the board (accept the terms when asked)
 python3 scripts/setup.py                      # names your accounts, makes tokens, stores them in Vercel
 vercel deploy --prod
 ```
 
-`setup.py` asks for your account names and your board's URL, and writes everything you need to `~/.baton/cloud-setup.txt` (readable only by you). Run it again after deploying if you didn't know the URL yet; it keeps your tokens.
+`setup.py` asks for your account names and your board's URL, and writes everything you need to `~/.coshift/cloud-setup.txt` (readable only by you). Run it again after deploying if you didn't know the URL yet; it keeps your tokens.
 
 **2. Connect each account's cloud environment**
 
 In [claude.ai/code](https://claude.ai/code), open each account's environment settings:
 
-- **Environment variables:** `BATON_URL` and that account's `BATON_TOKEN`. Copy both from `cat ~/.baton/cloud-setup.txt`.
-- **Network access:** allow your board's host (for example `my-baton.vercel.app`).
+- **Environment variables:** `COSHIFT_URL` and that account's `COSHIFT_TOKEN`. Copy both from `cat ~/.coshift/cloud-setup.txt`.
+- **Network access:** allow your board's host (for example `my-coshift.vercel.app`).
 
 **3. Install the context hook in your project (once)**
 
 Give one session this prompt:
 
-> Install the Baton context hook in this repo. Fetch `$BATON_URL/api/hook` with the header `Authorization: Bearer $BATON_TOKEN` and follow its install steps: save the script as `.claude/hooks/board-context.sh` and merge the hook into `.claude/settings.json`. Commit both and push.
+> Install the Coshift context hook in this repo. Fetch `$COSHIFT_URL/api/hook` with the header `Authorization: Bearer $COSHIFT_TOKEN` and follow its install steps: save the script as `.claude/hooks/board-context.sh` and merge the hook into `.claude/settings.json`. Commit both and push.
 
-The hook does nothing unless `BATON_URL` and `BATON_TOKEN` are set, so it's harmless for anyone else working in the repo.
+The hook does nothing unless `COSHIFT_URL` and `COSHIFT_TOKEN` are set, so it's harmless for anyone else working in the repo.
 
 **4. Start working**
 
 First session (the lead):
 
-> Use the Baton board. Run `curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN"` and follow it. Split this goal into independent tasks with add_task, then claim one and start: [your goal]
+> Use the Coshift board. Run `curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN"` and follow it. Split this goal into independent tasks with add_task, then claim one and start: [your goal]
 
 Every other session, and every restart:
 
 ```
-Run: curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN" and follow it.
+Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN" and follow it.
 Start with board resume and continue from your saved context.
 ```
 
@@ -135,8 +137,8 @@ Open your board's URL on your phone. It asks once for the admin key from `cloud-
 Cloud sessions can't read their own plan usage, so a Mac can send it to the board every minute. `setup.py` detects the accounts signed in on your Mac, from the Claude desktop app and from the Claude Usage menu bar app if you use it, and asks which is which. Then:
 
 ```bash
-cp ~/.baton/local.baton.push-usage.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.baton.push-usage.plist
+cp ~/.coshift/local.coshift.push-usage.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.coshift.push-usage.plist
 ```
 
 Without it everything still works. Sessions get a "usage unknown" warning instead of live limits.
@@ -144,7 +146,7 @@ Without it everything still works. Sessions get a "usage unknown" warning instea
 ### Optional: desktop sessions
 
 ```bash
-claude mcp add --scope user baton -- /usr/bin/python3 ~/.baton/board.py serve
+claude mcp add --scope user coshift -- /usr/bin/python3 ~/.coshift/board.py serve
 ```
 
 Desktop sessions then get the board as tools (`claim_task`, `resume`, ...) and report their own usage and context through the desktop app's usage tool.
@@ -162,23 +164,23 @@ Desktop sessions then get the board as tools (`claim_task`, `resume`, ...) and r
 | `report_usage` / `report_context` | Usage and context numbers (the Mac pusher and the hook send these for you). |
 | `save_context` | Save a summary for this account's next session. Too-short summaries are refused. |
 
-From a cloud session: `curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN"` prints the protocol and a `board` shell function, after which it's just `board claim_task` or `board add_note '{"id": 3, "text": "..."}'`.
+From a cloud session: `curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN"` prints the protocol and a `board` shell function, after which it's just `board claim_task` or `board add_note '{"id": 3, "text": "..."}'`.
 
 ## Settings
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
-| `BATON_URL`, `BATON_TOKEN` | each cloud environment | | Your board and that account's token. |
-| `BATON_CONTEXT_WINDOW` | cloud environment | `200000` | The model's context window in tokens. Set `1000000` if your sessions use a 1M-context model (`/context` shows the size). Too low only stops sessions early; too high means the 70% line never fires. |
-| `BATON_STOP_5H` / `BATON_STOP_WEEK` | Vercel | `85` / `90` | Usage stop lines (%). |
-| `BATON_STOP_CONTEXT` | Vercel | `70` | Context stop line (%). |
-| `BATON_TOKENS` | Vercel | | Token to account map. `setup.py` sets it. |
-| `BATON_USAGE_APP` | Mac | `HamedElfayome.Claude-Usage` | Read live usage from the Claude Usage app. Set it to an empty value to turn this off. |
+| `COSHIFT_URL`, `COSHIFT_TOKEN` | each cloud environment | | Your board and that account's token. |
+| `COSHIFT_CONTEXT_WINDOW` | cloud environment | `200000` | The model's context window in tokens. Set `1000000` if your sessions use a 1M-context model (`/context` shows the size). Too low only stops sessions early; too high means the 70% line never fires. |
+| `COSHIFT_STOP_5H` / `COSHIFT_STOP_WEEK` | Vercel | `85` / `90` | Usage stop lines (%). |
+| `COSHIFT_STOP_CONTEXT` | Vercel | `70` | Context stop line (%). |
+| `COSHIFT_TOKENS` | Vercel | | Token to account map. `setup.py` sets it. |
+| `COSHIFT_USAGE_APP` | Mac | `HamedElfayome.Claude-Usage` | Read live usage from the Claude Usage app. Set it to an empty value to turn this off. |
 
 ## Security
 
 - Every API call needs a token. Each account has its own token, and the page has a separate admin key. Tokens are compared in constant time.
-- Tokens live in Vercel's environment and in `~/.baton/` (mode 600). Nothing secret is in the repo, and `.gitignore` excludes `.env*` and `.vercel/`.
+- Tokens live in Vercel's environment and in `~/.coshift/` (mode 600). Nothing secret is in the repo, and `.gitignore` excludes `.env*` and `.vercel/`.
 - The local page (`board.py web`) only listens on 127.0.0.1 and rejects requests with another Host or Origin header, or that aren't JSON.
 - The usage reader takes only percentages, reset times and account IDs from the Claude apps. It never touches their session keys.
 - The board deletes nothing. Cancelled tasks and removed guidance are kept, just hidden.

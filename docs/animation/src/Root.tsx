@@ -1,6 +1,6 @@
 import { Composition } from "remotion";
-import { Baton } from "./Baton";
+import { Coshift } from "./Coshift";
 
 export const Root = () => (
-  <Composition id="Baton" component={Baton} durationInFrames={690} fps={30} width={960} height={540} />
+  <Composition id="Coshift" component={Coshift} durationInFrames={690} fps={30} width={960} height={540} />
 );

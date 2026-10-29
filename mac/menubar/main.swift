@@ -1,5 +1,5 @@
 // ClaudeSwitchMenu: menu bar front-end for claude-switch.
-// It only ever runs `claude-switch status|list|use <name>|toggle|side-by-side[-close] <name>` and opens the Baton board
+// It only ever runs `claude-switch status|list|use <name>|toggle|side-by-side[-close] <name>` and opens the Coshift board
 // page (board/board.py web --open). It never touches data folders.
 import AppKit
 import Foundation
@@ -249,7 +249,7 @@ func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [St
     } else {
         m.append(spec("No other profile", "none", enabled: false))
     }
-    m.append(spec("Open Baton Board", "board", key: "b"))
+    m.append(spec("Open Coshift Board", "board", key: "b"))
     m.append(spec("Rename...", "rename", enabled: !switching && !profiles.isEmpty, key: "r"))
     m.append(sep)
     m.append(spec(login == .needsApproval ? "Launch at Login (needs approval...)" : "Launch at Login", "login",
@@ -524,20 +524,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Starts the Baton board page if needed and opens it in the browser. Never touches profiles.
+    /// Starts the Coshift board page if needed and opens it in the browser. Never touches profiles.
     func openBoard() {
-        let script = ProcessInfo.processInfo.environment["BATON_PY"]
-            ?? (NSHomeDirectory() + "/.baton/board.py")
+        let script = ProcessInfo.processInfo.environment["COSHIFT_PY"]
+            ?? (NSHomeDirectory() + "/.coshift/board.py")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         p.arguments = [script, "web", "--open"]
         p.terminationHandler = { proc in
             if proc.terminationStatus != 0 {
-                notify(title: "Claude Switch Menu", message: "Could not open the Baton board (\(script))")
+                notify(title: "Claude Switch Menu", message: "Could not open the Coshift board (\(script))")
             }
         }
         do { try p.run() } catch {
-            notify(title: "Claude Switch Menu", message: "Could not open the Baton board: \(error.localizedDescription)")
+            notify(title: "Claude Switch Menu", message: "Could not open the Coshift board: \(error.localizedDescription)")
         }
     }
 

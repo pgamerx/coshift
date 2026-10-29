@@ -8,8 +8,8 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TMP = tempfile.mkdtemp(prefix="team-cloud-test.")
 for k in ("KV_REST_API_URL", "UPSTASH_REDIS_REST_URL", "CLAUDE_CODE_ORGANIZATION_UUID"):
     os.environ.pop(k, None)
-os.environ.update(BATON_HOME=TMP, BATON_USAGE_APP="", BATON_REQUIRE_USAGE="0",
-                  BATON_TOKENS=json.dumps({"tA": "ATLAS", "tF": "FORGE", "tX": "admin"}))
+os.environ.update(COSHIFT_HOME=TMP, COSHIFT_USAGE_APP="", COSHIFT_REQUIRE_USAGE="0",
+                  COSHIFT_TOKENS=json.dumps({"tA": "ATLAS", "tF": "FORGE", "tX": "admin"}))
 spec = importlib.util.spec_from_file_location("api_index", os.path.join(ROOT, "api", "index.py"))
 api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(api)
@@ -61,7 +61,7 @@ with open(transcript, "w") as f:
     f.write(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 4000, "cache_read_input_tokens":
                                                                    138000, "output_tokens": 2000}}}) + "\n")
 hook_in = json.dumps({"session_id": "s1", "transcript_path": transcript, "cwd": "/repo/unified-crm"})
-env = dict(os.environ, BATON_URL=URL, BATON_TOKEN="tA", TMPDIR=TMP)
+env = dict(os.environ, COSHIFT_URL=URL, COSHIFT_TOKEN="tA", TMPDIR=TMP)
 r = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], input=hook_in, capture_output=True,
                    text=True, env=env)
 out = json.loads(r.stdout or "{}")
@@ -72,12 +72,12 @@ r2 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], inp
                     text=True, env=env)
 check("hook stays quiet when context hasn't moved", r2.stdout.strip() == "", r2.stdout)
 r3 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], input=hook_in, capture_output=True,
-                    text=True, env={k: v for k, v in env.items() if k != "BATON_URL"})
+                    text=True, env={k: v for k, v in env.items() if k != "COSHIFT_URL"})
 check("hook does nothing without board env vars", r3.returncode == 0 and r3.stdout == "")
 r4 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], capture_output=True, text=True,
-                    input=hook_in.replace('"s1"', '"s1m"'), env=dict(env, BATON_CONTEXT_WINDOW="1000000"))
+                    input=hook_in.replace('"s1"', '"s1m"'), env=dict(env, COSHIFT_CONTEXT_WINDOW="1000000"))
 s1m = next(x for x in json.loads(get("/api/board", "tX"))["sessions"] if x["id"] == "s1m")
-check("BATON_CONTEXT_WINDOW=1000000: same tokens read 14%, no stop", r4.stdout == "" and s1m["context_pct"] == 14, s1m)
+check("COSHIFT_CONTEXT_WINDOW=1000000: same tokens read 14%, no stop", r4.stdout == "" and s1m["context_pct"] == 14, s1m)
 
 state = json.loads(get("/api/board", "tX"))
 sess = next(x for x in state["sessions"] if x["id"] == "s1")

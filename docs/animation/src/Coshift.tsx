@@ -84,11 +84,11 @@ const CAPTIONS: [number, number, string][] = [
 ];
 
 const PROMPT = [
-  'Run: curl -sS "$BATON_URL/api/help" -H "Authorization: Bearer $BATON_TOKEN" and follow it.',
+  'Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN" and follow it.',
   "Start with board resume and continue from your saved context.",
 ];
 
-export const Baton: React.FC = () => {
+export const Coshift: React.FC = () => {
   const f = useCurrentFrame();
   const scene = fade(f, 62, 85, 625, 640);
   const board = fade(f, 70, 100);
@@ -125,13 +125,13 @@ export const Baton: React.FC = () => {
       <AbsoluteFill style={{ opacity: title, justifyContent: "center", alignItems: "center" }}>
         <div style={{ width: 120, height: 18, borderRadius: 9, background: C.accent,
                       transform: `rotate(${track(f, [[0, -25], [45, 0]])}deg)`, marginBottom: 28 }} />
-        <div style={{ fontSize: 76, fontWeight: 800, letterSpacing: -1 }}>Baton</div>
+        <div style={{ fontSize: 76, fontWeight: 800, letterSpacing: -1 }}>Coshift</div>
         <div style={{ fontSize: 22, color: C.muted, marginTop: 10 }}>Your Claude Code accounts hand work to each other</div>
       </AbsoluteFill>
 
       <AbsoluteFill style={{ opacity: scene }}>
         <div style={{ position: "absolute", left: 24, top: 30, fontSize: 22, fontWeight: 700 }}>
-          Baton <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>· two accounts, one project</span>
+          Coshift <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>· two accounts, one project</span>
         </div>
 
         <Card x={A_X} name="ATLAS" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />
@@ -183,9 +183,9 @@ export const Baton: React.FC = () => {
       {/* end card */}
       <AbsoluteFill style={{ opacity: end, justifyContent: "center", alignItems: "center" }}>
         <div style={{ width: 120, height: 18, borderRadius: 9, background: C.accent, marginBottom: 26 }} />
-        <div style={{ fontSize: 64, fontWeight: 800 }}>Baton</div>
+        <div style={{ fontSize: 64, fontWeight: 800 }}>Coshift</div>
         <div style={{ fontSize: 20, color: C.muted, marginTop: 10 }}>Usage-aware handovers · context-limit restarts · phone-friendly board</div>
-        <div style={{ fontSize: 24, color: C.accent, marginTop: 26, fontFamily: MONO }}>github.com/pgamerx/baton</div>
+        <div style={{ fontSize: 24, color: C.accent, marginTop: 26, fontFamily: MONO }}>github.com/pgamerx/coshift</div>
         <div style={{ fontSize: 15, color: C.muted, marginTop: 10 }}>Free and open source · MIT</div>
       </AbsoluteFill>
     </AbsoluteFill>
