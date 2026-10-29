@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 *.bak*
 *.old.*
+# npm pack output
+*.tgz

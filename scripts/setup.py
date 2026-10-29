@@ -65,7 +65,8 @@ def main():
         sys.exit("No Upstash credentials in the Vercel project. Add it first: vercel integration add upstash/upstash-kv")
     remote_path = os.path.join(HOME, "remote.json")
     remote = json.load(open(remote_path)) if os.path.exists(remote_path) else {}
-    url = ask("Your board's URL (after `vercel deploy --prod`)", remote.get("url", "https://<project>.vercel.app"))
+    url = ask("Your board's URL (after `vercel deploy --prod`)",
+              remote.get("url") or os.environ.get("COSHIFT_DEFAULT_URL") or "https://<project>.vercel.app")
     remote.update(url=url.rstrip("/"), redis_url=kv["KV_REST_API_URL"], redis_token=kv["KV_REST_API_TOKEN"])
 
     # 4. optional: which local Claude account (org) is which name, for live usage from this Mac
@@ -118,15 +119,13 @@ def main():
     setup_txt = os.path.join(HOME, "cloud-setup.txt")
     write_private(setup_txt, "\n".join(lines))
 
-    print(f"""
-Done. Next:
-  1. Deploy:                 vercel deploy --prod
-  2. Cloud environments:     cat {setup_txt}
-  3. Live usage (optional):  cp {plist} ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.coshift.push-usage.plist
-  4. Desktop sessions (optional):
-                             claude mcp add --scope user coshift -- /usr/bin/python3 {link} serve
-  5. In each project repo, have one session install the context hook (README, setup step 3).""")
-
+    steps = [] if os.environ.get("COSHIFT_CLI") else [("Deploy:", "vercel deploy --prod")]
+    steps += [("Cloud environments:", f"cat {setup_txt}"),
+              ("Live usage (optional):", f"cp {plist} ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) "
+                                         "~/Library/LaunchAgents/local.coshift.push-usage.plist"),
+              ("Desktop sessions (optional):", f"claude mcp add --scope user coshift -- /usr/bin/python3 {link} serve"),
+              ("Context hook:", "in each project repo, have one session install it (README, setup step 3)")]
+    print("\nDone. Next:\n" + "\n".join(f"  {i}. {label:<28} {cmd}" for i, (label, cmd) in enumerate(steps, 1)))
 
 if __name__ == "__main__":
     main()

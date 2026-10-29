@@ -5,7 +5,7 @@
 <sub>Formerly called Baton.</sub>
 
 <p align="center">
-  <img src="docs/img/coshift-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
+  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/coshift-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
 </p>
 
 Coshift is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
@@ -16,10 +16,10 @@ Coshift is a small shared task board that your Claude Code sessions use themselv
 ![deps](https://img.shields.io/badge/dependencies-none-brightgreen)
 
 <p align="center">
-  <img src="docs/img/board-desktop.png" alt="Coshift board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
+  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-desktop.png" alt="Coshift board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
   &nbsp;
-  <img src="docs/img/board-mobile-accounts.jpg" alt="Coshift on a phone: account cards" width="17%">
-  <img src="docs/img/board-mobile-tasks.jpg" alt="Coshift on a phone: sessions and task tabs" width="17%">
+  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-mobile-accounts.jpg" alt="Coshift on a phone: account cards" width="17%">
+  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-mobile-tasks.jpg" alt="Coshift on a phone: sessions and task tabs" width="17%">
 </p>
 
 <p align="center"><sub>The board page (demo data). It's built for checking from your phone.</sub></p>
@@ -75,32 +75,40 @@ sequenceDiagram
 
 The account names are yours to pick (`ATLAS` and `FORGE` here). The board identifies each session by its token, so the restart prompt is the same for every account.
 
-## Try it without setting anything up
+## Install
 
 ```bash
-git clone https://github.com/pgamerx/coshift && cd coshift
-python3 scripts/demo.py        # then open http://127.0.0.1:7788
+npx coshift demo                    # try it first: the page with made-up data, at http://127.0.0.1:7788
+npm install -g coshift              # or install it
+brew install pgamerx/tap/coshift    # or with Homebrew
 ```
 
-It fills a throwaway board with made-up data. Python 3.9+ and nothing else.
+[![npm](https://img.shields.io/npm/v/coshift?color=c96442)](https://www.npmjs.com/package/coshift)
+
+Needs Node 18+ and Python 3.9+ (the board is Python with no dependencies). Run `coshift help` for every command.
 
 ## Setup
 
-You need: a [Vercel](https://vercel.com) account (the free plan is fine), the [Vercel CLI](https://vercel.com/docs/cli), Python 3.9+, and two or more Claude Code accounts or sessions.
+You need: a [Vercel](https://vercel.com) account (the free plan is fine), the [Vercel CLI](https://vercel.com/docs/cli) (`npm i -g vercel`), and two or more Claude Code accounts or sessions.
 
 > **Is running more than one account allowed?** Check [Anthropic's terms](https://www.anthropic.com/legal/consumer-terms) for your plan. Coshift doesn't change any limits. It only coordinates the sessions you already run.
 
 **1. Deploy the board**
 
 ```bash
-git clone https://github.com/pgamerx/coshift && cd coshift
-vercel link                                   # create a Vercel project
-vercel integration add upstash/upstash-kv     # free Redis for the board (accept the terms when asked)
-python3 scripts/setup.py                      # names your accounts, makes tokens, stores them in Vercel
-vercel deploy --prod
+coshift setup
 ```
 
-`setup.py` asks for your account names and your board's URL, and writes everything you need to `~/.coshift/cloud-setup.txt` (readable only by you). Run it again after deploying if you didn't know the URL yet; it keeps your tokens.
+It walks you through four steps: creates a Vercel project for your board, adds free Upstash Redis storage (accept its terms when asked), asks for your account names and creates a token for each, then deploys. Everything you need next is written to `~/.coshift/cloud-setup.txt` (readable only by you). Running it again keeps your tokens; after upgrading Coshift, `coshift deploy` updates your board.
+
+<details><summary>From a clone instead of npm</summary>
+
+```bash
+git clone https://github.com/pgamerx/coshift && cd coshift
+vercel link && vercel integration add upstash/upstash-kv
+python3 scripts/setup.py && vercel deploy --prod
+```
+</details>
 
 **2. Connect each account's cloud environment**
 
@@ -114,6 +122,8 @@ In [claude.ai/code](https://claude.ai/code), open each account's environment set
 Give one session this prompt:
 
 > Install the Coshift context hook in this repo. Fetch `$COSHIFT_URL/api/hook` with the header `Authorization: Bearer $COSHIFT_TOKEN` and follow its install steps: save the script as `.claude/hooks/board-context.sh` and merge the hook into `.claude/settings.json`. Commit both and push.
+
+Or from your own machine: `mkdir -p .claude/hooks && coshift hook > .claude/hooks/board-context.sh` (then add the same `settings.json` entry, which `/api/hook` shows).
 
 The hook does nothing unless `COSHIFT_URL` and `COSHIFT_TOKEN` are set, so it's harmless for anyone else working in the repo.
 
@@ -146,7 +156,7 @@ Without it everything still works. Sessions get a "usage unknown" warning instea
 ### Optional: desktop sessions
 
 ```bash
-claude mcp add --scope user coshift -- /usr/bin/python3 ~/.coshift/board.py serve
+claude mcp add --scope user coshift -- coshift serve
 ```
 
 Desktop sessions then get the board as tools (`claim_task`, `resume`, ...) and report their own usage and context through the desktop app's usage tool.
@@ -195,7 +205,8 @@ From a cloud session: `curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Beare
 > **Warning:** these depend on how the Claude desktop app stores its data, which isn't a public interface. An app update could break them. Read `mac/` and `docs/switcher-commands.md` before using them, and keep the backup. The board doesn't need them.
 
 ```bash
-cd mac && ./install.sh                 # claude-switch into ~/bin, plus a one-click app
+coshift claude-switch status          # installed with npm/brew: run the switcher directly
+cd mac && ./install.sh                 # from a clone: claude-switch into ~/bin, plus a one-click app
 cd menubar && ./install-menubar.sh     # the menu bar app (needs the Xcode command line tools)
 ```
 
