@@ -2,14 +2,6 @@
 
 **Run several Claude Code accounts on one project at the same time, and let them hand work to each other instead of to you.**
 
-<sub>Formerly called Baton.</sub>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/coshift-demo.gif" alt="Animation: two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary to the board, and a new session resumes from a two-line prompt" width="800">
-</p>
-
-Coshift is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
-
 [![npm](https://img.shields.io/npm/v/coshift?color=c96442&label=npm)](https://www.npmjs.com/package/coshift)
 [![homebrew](https://img.shields.io/badge/homebrew-pgamerx%2Ftap-c96442)](https://github.com/pgamerx/homebrew-tap)
 [![tests](https://github.com/pgamerx/coshift/actions/workflows/test.yml/badge.svg)](https://github.com/pgamerx/coshift/actions/workflows/test.yml)
@@ -17,20 +9,15 @@ Coshift is a small shared task board that your Claude Code sessions use themselv
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![deps](https://img.shields.io/badge/dependencies-none-brightgreen)
 
+![Two Claude Code accounts claim different tasks from a shared board; ATLAS hits its 5-hour limit and hands its task to FORGE with notes; FORGE's context reaches 70%, it saves a summary, and a new session resumes from a two-line prompt](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/coshift-demo.gif)
+
 ```bash
 npx coshift demo     # try it in 10 seconds: the board page with made-up data
 ```
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-desktop.png" alt="Coshift board on desktop: two accounts with usage bars, guidance, sessions with context %, and tasks" width="62%">
-  &nbsp;
-  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-mobile-accounts.jpg" alt="Coshift on a phone: account cards" width="17%">
-  <img src="https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-mobile-tasks.jpg" alt="Coshift on a phone: sessions and task tabs" width="17%">
-</p>
+Coshift is a small shared task board that your Claude Code sessions use themselves. Each session claims its own task, leaves progress notes, and watches its account's usage and its own context window. When an account gets close to its limit, it hands its task over with a full note and the other account carries on. When a session's context fills up, it saves a summary to the board and gives you a two-line prompt for a fresh session that picks up exactly where it stopped. No copy-pasted handover documents, no paying for compaction.
 
-<p align="center"><sub>The board page (demo data). It's built for checking from your phone.</sub></p>
-
----
+*Formerly called Baton.*
 
 ## What it does
 
@@ -41,45 +28,7 @@ npx coshift demo     # try it in 10 seconds: the board page with made-up data
 - **Lets you steer from your phone.** Add tasks, write standing guidance ("use pnpm", "don't touch payments") for both accounts or one, or send a one-off message that the session receives on its next board action.
 - **Works in the cloud.** Cloud sessions on claude.ai/code use it over HTTPS with a per-account token. Desktop sessions can use it too, as an MCP server.
 
-## How it works
-
-```mermaid
-flowchart LR
-    subgraph sessions["Claude Code sessions (cloud or desktop)"]
-        A["ATLAS session"]
-        F["FORGE session"]
-    end
-    A -- "claim, notes, save_context<br/>(ATLAS token)" --> B[("Coshift board<br/>Vercel + Upstash Redis")]
-    F -- "claim, notes, save_context<br/>(FORGE token)" --> B
-    HK["context hook<br/>(runs after tool calls)"] -. "context %" .-> B
-    M["Your Mac<br/>(optional usage pusher)"] -- "5-hour and weekly %<br/>every minute" --> B
-    Y["You<br/>(board page, phone)"] -- "tasks, guidance, messages" --> B
-```
-
-A typical day, with two accounts:
-
-```mermaid
-sequenceDiagram
-    participant Y as You
-    participant A as ATLAS session
-    participant B as Coshift board
-    participant F as FORGE session
-    participant N as New ATLAS session
-    Y->>A: "Split the checkout work into tasks and start"
-    A->>B: add_task x5, claim_task -> #1
-    F->>B: claim_task -> #2 (never the same task)
-    A->>B: add_note "schema done, next: form"
-    Note over A,B: ATLAS reaches 85% of its 5-hour limit
-    A->>B: release_task #1 with a full handover
-    F->>B: claim_task -> #1, with all its notes
-    Note over A: Later: a session's context reaches 70%
-    A->>B: save_context (goal, state, branch, next step)
-    A-->>Y: two-line restart prompt
-    Y->>N: paste the two lines
-    N->>B: resume -> saved summary + claimed task
-```
-
-The account names are yours to pick (`ATLAS` and `FORGE` here). The board identifies each session by its token, so the restart prompt is the same for every account.
+![The Coshift board on desktop and on a phone: both accounts' usage, guidance, sessions with their context, and tasks in tabs](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-overview.png)
 
 ## Install
 
@@ -89,8 +38,15 @@ npm install -g coshift              # or install it
 brew install pgamerx/tap/coshift    # or with Homebrew
 ```
 
-
 Needs Node 18+ and Python 3.9+ (the board is Python with no dependencies). Run `coshift help` for every command.
+
+## How it works
+
+![How it works: ATLAS and FORGE sessions talk to the Coshift board (Vercel + Upstash Redis) with their own tokens; you steer it from your phone, your Mac pushes usage, and a hook reports each session's context](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/how-it-works.png)
+
+![A typical day: You ask ATLAS to split the work; ATLAS and FORGE claim different tasks; at 85% of its 5-hour limit ATLAS releases its task with a handover and FORGE picks it up; at 70% context a session saves its summary, gives you a two-line prompt, and a new session resumes from the board](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/a-typical-day.png)
+
+The account names are yours to pick (`ATLAS` and `FORGE` here). The board identifies each session by its token, so the restart prompt is the same for every account.
 
 ## Setup
 
@@ -106,14 +62,13 @@ coshift setup
 
 It walks you through four steps: creates a Vercel project for your board, adds free Upstash Redis storage (accept its terms when asked), asks for your account names and creates a token for each, then deploys. Everything you need next is written to `~/.coshift/cloud-setup.txt` (readable only by you). Running it again keeps your tokens; after upgrading Coshift, `coshift deploy` updates your board.
 
-<details><summary>From a clone instead of npm</summary>
+From a clone instead of npm:
 
 ```bash
 git clone https://github.com/pgamerx/coshift && cd coshift
 vercel link && vercel integration add upstash/upstash-kv
 python3 scripts/setup.py && vercel deploy --prod
 ```
-</details>
 
 **2. Connect each account's cloud environment**
 
@@ -231,7 +186,7 @@ No dependencies, no network, nothing touches your real data. CI runs them on Lin
 2. Wait until `npx coshift@X.Y.Z --version` works (npm takes a few minutes to serve a new version).
 3. In [homebrew-tap](https://github.com/pgamerx/homebrew-tap), update the version in `Formula/coshift.rb` and its `sha256` (`curl -sL <tarball url> | shasum -a 256`).
 
-The animation at the top is code too: `docs/animation` is a small [Remotion](https://www.remotion.dev) project. To change and re-render it: `cd docs/animation && npm i && npm run gif` (needs Node and ffmpeg).
+The animation and the two diagrams are code too: `docs/animation` is a small [Remotion](https://www.remotion.dev) project. Re-render the GIF with `cd docs/animation && npm i && npm run gif` (needs Node and ffmpeg), a diagram with `npx remotion still src/index.ts HowItWorks ../img/how-it-works.png --scale=2` (or `TypicalDay`).
 
 ## Limitations
 
