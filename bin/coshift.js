@@ -360,7 +360,9 @@ async function config(args) {
   };
   if (args.length >= 2) {
     const r = pyOut(BOARD, ["settings", "set", ...args]);
-    return r.code ? die(r.err.split("\n").pop() || r.out) : good(r.out);
+    if (r.code) return die(r.err.split("\n").pop() || r.out);
+    good(r.out);
+    return info("Applies to every session right away; no redeploy needed.");
   }
   const r = pyOut(BOARD, ["settings"]);
   if (r.code) die(r.err.split("\n").pop() || "couldn't read the board");
@@ -369,14 +371,16 @@ async function config(args) {
     banner("settings");
     const pick = await select("Change which setting?", [
       ...Object.keys(keys).map((k) => ({ label: `${keys[k]}`, value: k, hint: k === "context_window" ? tokensLabel(s[k]) : String(s[k] === "" ? "off" : s[k]) })),
-      ...Object.entries(s.context_windows || {}).map(([a, w]) => ({ label: `Context window of ${a}`, value: "cw:" + a, hint: tokensLabel(w) })),
+      ...[...new Set([...Object.keys(s.context_windows || {}), ...knownAccounts()])].map((a) => ({
+        label: `Context window of ${a}`, value: "cw:" + a,
+        hint: s.context_windows?.[a] ? tokensLabel(s.context_windows[a]) : `default (${tokensLabel(s.context_window)})` })),
       { label: "Done", value: "" },
     ]);
     if (!pick) return;
     const [k, acct] = pick.startsWith("cw:") ? ["context_window", pick.slice(3)] : [pick, null];
-    const v = await input(`New value`, String(acct ? s.context_windows[acct] : s[k]));
+    const v = await input(k === "context_window" ? "New value (e.g. 1M or 200K)" : "New value", String(acct ? s.context_windows?.[acct] ?? s.context_window : s[k]));
     const out = pyOut(BOARD, ["settings", "set", k, v, ...(acct ? [acct] : [])]);
-    out.code ? bad(out.err.split("\n").pop()) : good(out.out);
+    out.code ? bad(out.err.split("\n").pop()) : good(`${out.out}  ${c.dim("(applies right away; no redeploy needed)")}`);
     return config(args);
   }
   for (const [k, label] of Object.entries(keys)) console.log(`  ${c.dim(label.padEnd(44))} ${k.padEnd(15)} ${c.bold(k === "context_window" ? tokensLabel(s[k]) : s[k] === "" ? "off" : s[k])}`);

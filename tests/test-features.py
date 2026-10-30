@@ -134,6 +134,20 @@ check("five accounts each get a different task", len(set(got.values())) == 5, go
 txt, _ = as_("FIVE", "s5-FIVE", "board_status")
 check("status lists all five accounts", all(f"{n}: 5h" in txt for n in five), txt[:300])
 
+# ---- context window changes apply to stored token counts at once; 1M / 200K accepted ----
+B.PROJECT = ""
+as_("CW", "cw1", "report_usage", five_hour_pct=5, weekly_pct=5)
+txt, _ = as_("CW", "cw1", "report_context", tokens=180000)
+check("180k tokens on the 200K default is a context stop", txt.startswith("CONTEXT LIMIT"), txt)
+with B.board(write=True) as b:
+    B.set_setting(b, "context_window", "1M", "CW")
+as_("CW", "cw1", "add_task", title="after the window change")
+txt, err = as_("CW", "cw1", "claim_task")
+check("after setting 1M the same session can claim again (18%)", not err and "You own task" in txt, txt)
+with B.board() as b:
+    check("page shows the recomputed 18%", B.ctx_pct(b, b["sessions"]["cw1"]) == 18, b["sessions"]["cw1"])
+check("'200K' and '1,000,000' parse", B._whole("200K") == 200000 and B._whole("1,000,000") == 1000000)
+
 # ---- projects: own tasks per repo, shared usage/settings, main board for repos without one ----
 B.PROJECT = "shop"
 txt, _ = as_("A", "pa", "add_task", title="main-board task (no shop project yet)")

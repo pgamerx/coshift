@@ -287,6 +287,21 @@ def last_seen(b, t):
     return max(t.get("updated", 0), b["sessions"].get(t.get("session") or "", {}).get("last", 0))
 
 
+def ctx_pct(b, sess):
+    """A session's context %: from its token count and its account's window now, so a window change applies at once."""
+    if sess.get("context_tokens"):
+        return min(100, sess["context_tokens"] * 100 // window_for(b, sess.get("account", "")))
+    return sess.get("context_pct")
+
+
+def _whole(value):
+    """'1M', '200k', '1,000,000' or 85 -> int."""
+    m = re.fullmatch(r"([\d.,_]+)([km]?)", str(value).strip().lower())
+    if not m:
+        raise ValueError
+    return int(float(m.group(1).replace(",", "").replace("_", "")) * {"": 1, "k": 1000, "m": 1000000}[m.group(2)])
+
+
 def set_setting(b, key, value, account=None):
     """Validates and stores one setting on the board (context_window can be per account). Returns the value."""
     if key not in DEFAULTS:
@@ -298,7 +313,7 @@ def set_setting(b, key, value, account=None):
     else:
         lo, hi = SETTING_RANGES[key]
         try:
-            value = int(value)
+            value = _whole(value)
         except (TypeError, ValueError):
             raise ValueError(f"{key} must be a whole number")
         if not lo <= value <= hi:
@@ -521,7 +536,7 @@ def t_claim_task(a):
         if flag:
             raise ValueError(f"you're at your limit ({flag}). Don't claim new work; another account will.")
         mine = [t for t in b["tasks"] if t["status"] == "claimed" and t["owner"] == me]
-        ctx = b["sessions"].get(SID, {}).get("context_pct", 0)
+        ctx = ctx_pct(b, b["sessions"].get(SID, {})) or 0
         if ctx >= STOP_CONTEXT and not (mine and a.get("id") in (None, mine[0]["id"])):
             raise ValueError(f"this session's context is at {ctx}% (stop line {STOP_CONTEXT}%). Take no new task: finish "
                              "your current one, then save_context and give the user the two-line restart prompt.")
@@ -937,7 +952,7 @@ def web_state():
 def _web_state():
     with board() as b:
         usage = {k: dict(v, stop=over_limit(v), age_min=int((now() - v["at"]) // 60)) for k, v in b["usage"].items()}
-        sessions = sorted(({"id": k, **v, "age_min": int((now() - v["last"]) // 60),
+        sessions = sorted(({"id": k, **v, "context_pct": ctx_pct(b, v), "age_min": int((now() - v["last"]) // 60),
                             "task": next((f"#{t['id']} {t['title']}" for t in b["tasks"]
                                           if t["status"] == "claimed" and t.get("session") == k), "")}
                            for k, v in b["sessions"].items() if now() - v["last"] < 3 * 3600),
@@ -1170,7 +1185,8 @@ def ingest_statusline(d):
             b.setdefault("settings", {}).setdefault("context_windows", {})[me] = int(cw["context_window_size"])
         if cw.get("used_percentage") is not None:
             b["sessions"].setdefault(sid, {}).update(account=me, cwd=(d.get("workspace") or {}).get("current_dir") or CWD,
-                                                     last=now(), context_pct=round(cw["used_percentage"]), context_at=now())
+                                                     last=now(), context_pct=round(cw["used_percentage"]), context_tokens=0,
+                                                     context_at=now())  # Claude Code's own %, already right
     return 0
 
 
