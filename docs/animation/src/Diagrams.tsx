@@ -43,8 +43,8 @@ const Arrow: React.FC<{ x1: number; y1: number; x2: number; y2: number; label: s
 export const HowItWorks: React.FC = () => (
   <AbsoluteFill style={{ background: C.bg, color: C.text, fontFamily: FONT }}>
     <div style={{ position: "absolute", left: 40, top: 28, fontSize: 26, fontWeight: 800 }}>How it works</div>
-    <Node x={30} y={110} w={230} h={110} title="ATLAS session" sub="Claude Code, cloud or desktop" color={C.accent} />
-    <Node x={30} y={300} w={230} h={110} title="FORGE session" sub="Claude Code, cloud or desktop" color={C.accent} />
+    <Node x={30} y={110} w={230} h={110} title="WORK session" sub="Claude Code, cloud or desktop" color={C.accent} />
+    <Node x={30} y={300} w={230} h={110} title="PERSONAL session" sub="Claude Code, cloud or desktop" color={C.accent} />
     <Node x={495} y={170} w={250} h={180} title="Coshift board" sub={"Vercel + Upstash Redis\ntasks · notes · usage · context"} dashed color={C.accent} />
     <Node x={975} y={70} w={210} h={100} title="You" sub="board page, on your phone" />
     <Node x={975} y={210} w={210} h={100} title="Live limits" sub="status line / usage pusher" />
@@ -61,14 +61,14 @@ export const HowItWorks: React.FC = () => (
 );
 
 // A small sequence diagram: lanes across, steps down.
-const LANES = ["You", "ATLAS", "Board", "FORGE", "New session"];
+const LANES = ["You", "WORK", "Board", "PERSONAL", "New session"];
 const laneX = (i: number) => 110 + i * 245;
 type Step = { from: number; to: number; text: string; color?: string } | { note: string; color: string };
 const STEPS: Step[] = [
   { from: 0, to: 1, text: "Split the checkout work into tasks" },
   { from: 1, to: 2, text: "add_task ×5 · claim_task → #1" },
   { from: 3, to: 2, text: "claim_task → #2 (never the same task)" },
-  { note: "ATLAS reaches 85% of its 5-hour limit", color: C.warn },
+  { note: "WORK reaches 85% of its 5-hour limit", color: C.warn },
   { from: 1, to: 2, text: "release_task #1 + handover note", color: C.warn },
   { from: 3, to: 2, text: "claim_task → #1 with all its notes" },
   { note: "Later: a session's context reaches 70%", color: C.ok },

@@ -78,8 +78,8 @@ const Chip: React.FC<{ id: number; title: string; x: number; y: number; done?: b
 const CAPTIONS: [number, number, string][] = [
   [85, 175, "Each session claims its own task from the shared board"],
   [175, 300, "Every account works in parallel, never on the same task"],
-  [300, 425, "ATLAS hits its 5-hour limit and hands its task over, with notes"],
-  [425, 505, "FORGE's context reaches 70%: it saves a summary to the board"],
+  [300, 425, "Account 1 hits its 5-hour limit and hands its task over, with notes"],
+  [425, 505, "Account 2's context reaches 70%: it saves a summary to the board"],
   [505, 625, "A fresh session resumes from two lines. No compaction."],
 ];
 
@@ -134,8 +134,8 @@ export const Coshift: React.FC = () => {
           Coshift <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>(team board) · any number of accounts, one project</span>
         </div>
 
-        <Card x={A_X} name="ATLAS" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />
-        <Card x={F_X} name="FORGE" pill={fPill} fiveH={fFive} ctx={fCtx} opacity={1} />
+        <Card x={A_X} name="Account 1" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />
+        <Card x={F_X} name="Account 2" pill={fPill} fiveH={fFive} ctx={fCtx} opacity={1} />
 
         {/* board */}
         <div style={{ position: "absolute", left: B_X, top: CARD_Y, width: 286, height: CARD_H, opacity: board,
@@ -143,7 +143,7 @@ export const Coshift: React.FC = () => {
                       background: "rgba(224,128,94,.05)" }}>
           <b style={{ fontSize: 16 }}>Shared board</b>
           <div style={{ fontSize: 12, color: f > 500 ? C.warn : C.muted, marginTop: 3, height: 16 }}>
-            {f > 500 ? "📄 FORGE saved its context · just now" : "Queue"}
+            {f > 500 ? "📄 Account 2 saved its context · just now" : "Queue"}
           </div>
           <div style={{ position: "absolute", top: DONE_Y - CARD_Y - 22, left: 15, fontSize: 12, color: C.muted,
                         textTransform: "uppercase", letterSpacing: 1 }}>Done</div>
@@ -168,13 +168,13 @@ export const Coshift: React.FC = () => {
         {/* restart prompt */}
         <AbsoluteFill style={{ opacity: prompt, background: "rgba(10,10,9,.72)", justifyContent: "center", alignItems: "center" }}>
           <div style={{ width: 860, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "18px 22px" }}>
-            <div style={{ fontSize: 14, color: C.muted, marginBottom: 10 }}>New FORGE session · the two-line restart prompt</div>
+            <div style={{ fontSize: 14, color: C.muted, marginBottom: 10 }}>New Account 2 session · the two-line restart prompt</div>
             <div style={{ fontFamily: MONO, fontSize: 13.5, lineHeight: 1.7, color: C.text, minHeight: 46 }}>
               <div>{PROMPT[0].slice(0, typed)}</div>
               <div>{PROMPT[1].slice(0, Math.max(0, typed - PROMPT[0].length))}<span style={{ opacity: f % 20 < 10 ? 1 : 0 }}>▍</span></div>
             </div>
             <div style={{ fontSize: 14, color: C.ok, marginTop: 10, opacity: fade(f, 578, 586) }}>
-              ✓ resume → FORGE's saved summary + task #1 with all its notes
+              ✓ resume → Account 2's saved summary + task #1 with all its notes
             </div>
           </div>
         </AbsoluteFill>

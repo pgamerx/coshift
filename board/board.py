@@ -32,6 +32,7 @@ except ImportError:
             except OSError:
                 time.sleep(0.05)
 from contextlib import contextmanager
+from functools import lru_cache
 from datetime import datetime, timezone
 
 HOME = os.environ.get("COSHIFT_HOME", os.path.expanduser("~/.coshift"))
@@ -88,6 +89,12 @@ if REMOTE.get("accounts", {}).get(ORG):
     ME = REMOTE["accounts"][ORG]  # same name the cloud uses for this account, e.g. ATLAS
 SID = os.environ.get("CLAUDE_CODE_SESSION_ID") or f"pid{os.getpid()}"
 CWD = os.getcwd()
+# Which project's board: COSHIFT_PROJECT, else the git repo this runs in. A repo without its own project (made on the
+# page or with `board.py projects add`) uses the main board, as do all boards from before projects existed.
+PROJECT = os.environ.get("COSHIFT_PROJECT", "")
+MAIN = "default"
+SHARED = ("usage", "settings", "leases")  # about accounts and this machine, so the same on every project's board
+CURRENT = ""  # the project of the board last opened ("" = main)
 
 INSTRUCTIONS = f"""Shared task board for several Claude accounts (two or more) working on the same project in parallel.
 You are one of them; the others work in their own sessions. Follow this protocol:
@@ -149,53 +156,114 @@ def _fresh(b):
     return b
 
 
+def slug(name):
+    return re.sub(r"[^a-z0-9_-]+", "-", str(name).lower()).strip("-")[:40]
+
+
+@lru_cache(maxsize=64)
+def repo_name(d):
+    """Name of the git repo folder d is in (the main checkout's, also from a worktree), else d's own name."""
+    try:
+        common = subprocess.run(["git", "-C", d, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        common = ""
+    return os.path.basename(os.path.dirname(common) if common.endswith(".git") else d.rstrip("/\\"))
+
+
+def current_project(main):
+    name = slug(PROJECT or repo_name(CWD))
+    return name if name in main.get("projects", {}) else ""
+
+
 @contextmanager
-def _redis_board(write):
+def _redis_doc(key, write):
     if not write:
-        raw = redis("GET", "board")
+        raw = redis("GET", key)
         yield _fresh(json.loads(raw) if raw else None)
         return
     me, deadline = uuid.uuid4().hex, time.time() + 15
-    while not redis("SET", "board:lock", me, "NX", "PX", "10000"):
+    while not redis("SET", key + ":lock", me, "NX", "PX", "10000"):
         if time.time() > deadline:
             raise ValueError("board is busy, try again")
         time.sleep(0.05)
     try:
-        raw = redis("GET", "board")
+        raw = redis("GET", key)
         b = _fresh(json.loads(raw) if raw else None)
         yield b
-        redis("SET", "board", json.dumps(b))
+        if not b.pop("_unchanged", False):
+            redis("SET", key, json.dumps(b))
     finally:  # release only our own lock
         redis("EVAL", "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0",
-              "1", "board:lock", me)
+              "1", key + ":lock", me)
 
 
 @contextmanager
-def board(write=False):
-    """Yields the board dict under an exclusive lock; saves atomically if write=True."""
-    if REDIS_URL:
-        with _redis_board(write) as b:
-            _apply_settings(b)
-            yield b
-        return
-    os.makedirs(HOME, mode=0o700, exist_ok=True)
-    with open(LOCK, "a+") as lk:
+def _file_doc(key, write):
+    path, lock = (BOARD, LOCK) if key == "board" else (os.path.join(HOME, "boards", key[6:] + ".json"),
+                                                        os.path.join(HOME, "boards", key[6:] + ".lock"))
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(lock, "a+") as lk:
         _lock(lk)
         try:
-            with open(BOARD, encoding="utf-8") as f:
-                b = json.load(f)
+            with open(path, encoding="utf-8") as f:
+                b = _fresh(json.load(f))
         except FileNotFoundError:
-            b = {"next_id": 1, "tasks": [], "usage": {}}
-        b.setdefault("sessions", {})
-        b.setdefault("messages", [])
-        b.setdefault("guidance", [])
-        _apply_settings(b)
+            b = _fresh(None)
         yield b
-        if write:
-            fd, tmp = tempfile.mkstemp(dir=HOME, prefix=".board.")
+        if write and not b.pop("_unchanged", False):
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".board.")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(b, f, indent=1)
-            os.replace(tmp, BOARD)
+            os.replace(tmp, path)
+
+
+def _doc(key, write):
+    return _redis_doc(key, write) if REDIS_URL else _file_doc(key, write)
+
+
+@contextmanager
+def board(write=False, project=None):
+    """Yields this project's board dict under an exclusive lock; saves atomically if write=True.
+    A project board carries the main board's shared parts (usage, settings, port leases) while it's open."""
+    global CURRENT
+    with _doc("board", write) as main:
+        name = current_project(main) if project is None else project
+        CURRENT = name
+        if not name:
+            _apply_settings(main)
+            yield main
+            return
+        with _doc("board:" + name, write) as b:
+            for k in SHARED:
+                b[k] = main.setdefault(k, {})
+            before = json.dumps([main[k] for k in SHARED], sort_keys=True)
+            _apply_settings(b)
+            yield b
+            for k in SHARED:
+                main[k] = b.pop(k)
+            main["_unchanged"] = json.dumps([main[k] for k in SHARED], sort_keys=True) == before
+
+
+def projects():
+    with _doc("board", False) as main:
+        return sorted(main.get("projects", {}))
+
+
+def add_project(name):
+    name = slug(name)
+    if not name or name == MAIN:
+        raise ValueError("project name: letters, digits, - or _ (and not 'default')")
+    with _doc("board", True) as main:
+        main.setdefault("projects", {}).setdefault(name, {"t": now()})
+    return name
+
+
+def each_board():
+    """(project, board) for the main board and every project, read-only."""
+    for name in [""] + projects():
+        with board(project=name) as b:
+            yield name, b
 
 
 def settings_of(b):
@@ -325,7 +393,7 @@ def note(t, by, text):
 
 
 def render(b, me=""):
-    out = []
+    out = [f"Project: {CURRENT or 'main board'}"] if CURRENT or b.get("projects") else []
     out.append(f"Stop thresholds: 5-hour {STOP_5H}%, weekly {STOP_WEEK}%")
     out.append("Accounts:")
     if not b["usage"]:
@@ -563,8 +631,8 @@ def t_lease_port(a):
     need_me()
     with board(write=True) as b:
         s, leases = settings_of(b), b.setdefault("leases", {})
-        for sid in [k for k in leases if now() - b["sessions"].get(k, {}).get("last", 0) > 24 * 3600]:
-            if sid != SID:
+        for sid in [k for k in leases if k in b["sessions"] and now() - b["sessions"][k].get("last", 0) > 24 * 3600]:
+            if sid != SID:  # sessions of other projects aren't on this board; their own board frees them
                 del leases[sid]  # free ranges of sessions gone for a day
         if SID not in leases:
             used, n = set(leases.values()), 0
@@ -825,7 +893,48 @@ def accounts_view(usage):
     return cards
 
 
+def project_summaries():
+    out = []
+    for name, b in each_board():
+        ts = b["tasks"]
+        out.append({"name": name or MAIN, "claimed": sum(t["status"] == "claimed" for t in ts),
+                    "open": sum(t["status"] == "open" for t in ts), "needs": sum(bool(t.get("needs_input")) for t in ts)})
+    return out
+
+
+def setup_steps(b, sessions):
+    """What's still missing from the setup, judged from what the board has seen. Each: id, done, title, how."""
+    cloud = [x for x in sessions if str(x.get("cwd", "")).startswith("cloud")]
+    local = [x for x in sessions if not str(x.get("cwd", "")).startswith("cloud")]
+    fresh = [u for u in b["usage"].values() if now() - u["at"] < 30 * 60]
+    hosted = bool(REDIS_URL)
+    steps = [
+        {"id": "usage", "done": bool(fresh), "title": "Live usage reaches the board",
+         "how": "On the computer you work on, run: coshift pusher   (or start a session with: coshift run)"},
+        {"id": "desktop", "done": bool(local), "title": "A desktop or terminal session has used the board",
+         "how": "Run: coshift setup (step: Connect this computer), then start a session in your project."},
+    ]
+    if hosted:
+        steps += [
+            {"id": "cloud", "done": bool(cloud), "title": "Cloud sessions (claude.ai/code) can reach the board",
+             "how": "For each account: coshift env NAME, paste the two variables into its cloud environment, "
+                    "and allow the board's address under Network access. Optional if you only use desktop sessions."},
+            {"id": "hook", "done": any(x.get("context_pct") is not None for x in cloud), "title": "Cloud sessions report their context",
+             "how": "In your repo: coshift hook install, then commit .claude/hooks/board-context.sh and .claude/settings.json."},
+        ]
+    steps.append({"id": "alerts", "done": bool(settings_of(b)["ntfy_topic"]), "optional": True,
+                  "title": "Phone alerts when a session needs you",
+                  "how": "Install the free ntfy app, subscribe to a hard-to-guess topic, and enter it in Settings."})
+    return steps
+
+
 def web_state():
+    st = _web_state()
+    st["projects"] = project_summaries()  # after the board's lock is released: it reads every board
+    return st
+
+
+def _web_state():
     with board() as b:
         usage = {k: dict(v, stop=over_limit(v), age_min=int((now() - v["at"]) // 60)) for k, v in b["usage"].items()}
         sessions = sorted(({"id": k, **v, "age_min": int((now() - v["last"]) // 60),
@@ -840,12 +949,15 @@ def web_state():
                 "settings": dict(settings_of(b), context_windows=b.get("settings", {}).get("context_windows", {})),
                 "tasks": tasks, "messages": b["messages"][-20:],
                 "guidance": [g for g in b["guidance"] if g["active"]], "second_window": second_window_open(),
-                "stop_context": STOP_CONTEXT,
+                "stop_context": STOP_CONTEXT, "project": CURRENT or MAIN,
+                "setup": setup_steps(b, [dict(v) for v in b["sessions"].values()]),
                 "contexts": {k: v[-1] for k, v in b.get("contexts", {}).items() if v}}
 
 
 def web_post(path, a):
     """Actions from the page. Never deletes: cancel just hides a task from the queue."""
+    if path == "/api/projects":
+        return f"Project {add_project(a.get('name', ''))} created. Sessions in a repo with that name use its board."
     if path == "/api/task":
         if not a.get("title", "").strip():
             raise ValueError("title is required")
@@ -921,7 +1033,14 @@ def web_post(path, a):
 
 def web(port):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    one = threading.Lock()  # PROJECT is a global: one request at a time
+
+    def pick_project(path):
+        global PROJECT
+        q = dict(x.split("=", 1) for x in path.partition("?")[2].split("&") if "=" in x)
+        PROJECT = q.get("project") or MAIN
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -945,6 +1064,11 @@ def web(port):
         def do_GET(self):
             if not self.trusted():
                 return self.send(403, {"error": "forbidden"})
+            with one:
+                self.get()
+
+        def get(self):
+            pick_project(self.path)
             self.path = self.path.split("?")[0]  # e.g. /?theme=light
             if self.path == "/":
                 with open(PAGE, encoding="utf-8") as f:
@@ -954,6 +1078,11 @@ def web(port):
             self.send(404, {"error": "not found"})
 
         def do_POST(self):
+            with one:
+                self.post()
+
+        def post(self):
+            pick_project(self.path)
             self.path = self.path.split("?")[0]
             if not self.trusted() or not self.headers.get("Content-Type", "").startswith("application/json"):
                 return self.send(403, {"error": "forbidden"})
@@ -1028,6 +1157,8 @@ def ingest_statusline(d):
     rl, cw = d.get("rate_limits") or {}, d.get("context_window") or {}
     fh, sd = rl.get("five_hour") or {}, rl.get("seven_day") or {}
     sid = d.get("session_id") or SID
+    global CWD
+    CWD = (d.get("workspace") or {}).get("current_dir") or CWD  # the session's project, not this helper's
     with board(write=True) as b:
         if fh or sd:
             b["usage"][me] = {"five_hour_pct": round(fh.get("used_percentage") or 0),
@@ -1088,16 +1219,28 @@ def cli(argv):
                               "windows": b.get("settings", {}).get("context_windows", {})}))
     elif cmd == "tray-json":
         # everything a tray/menu bar shows, in one small JSON
-        with board() as b:
-            st = settings_of(b)
-            print(json.dumps({
-                "url": REMOTE.get("url") or f"http://127.0.0.1:{PORT}/",
-                "accounts": tray_accounts(b),
-                "needs": [{"id": t["id"], "title": t["title"], "by": t["needs_input"]["by"], "q": t["needs_input"]["q"]}
-                          for t in b["tasks"] if t.get("needs_input")],
-                "claimed": sum(t["status"] == "claimed" for t in b["tasks"]),
-                "open": sum(t["status"] == "open" for t in b["tasks"]),
-                "stop_5h": st["stop_5h"], "stop_week": st["stop_week"]}))
+        boards = list(each_board())  # every project's questions and counts
+        tasks = [(p, t) for p, b in boards for t in b["tasks"]]
+        b = boards[0][1]
+        st = settings_of(b)
+        print(json.dumps({
+            "url": REMOTE.get("url") or f"http://127.0.0.1:{PORT}/",
+            "accounts": tray_accounts(b),
+            "needs": [{"id": t["id"], "title": (f"[{p}] " if p else "") + t["title"], "by": t["needs_input"]["by"],
+                       "q": t["needs_input"]["q"]} for p, t in tasks if t.get("needs_input")],
+            "claimed": sum(t["status"] == "claimed" for _, t in tasks),
+            "open": sum(t["status"] == "open" for _, t in tasks),
+            "stop_5h": st["stop_5h"], "stop_week": st["stop_week"]}))
+    elif cmd == "projects":
+        if argv[1:2] == ["add"]:
+            print(f"Project {add_project(argv[2] if len(argv) > 2 else repo_name(CWD))} created. Sessions in a repo "
+                  "with that name now use its own board.")
+        else:
+            here = slug(PROJECT or repo_name(CWD))
+            here = here if here in projects() else MAIN
+            for p in project_summaries():
+                needs = f", {p['needs']} need you" if p["needs"] else ""
+                print(f"{'*' if p['name'] == here else ' '} {p['name']}: {p['claimed']} working, {p['open']} queued{needs}")
     elif cmd == "ingest-statusline":
         return ingest_statusline(json.load(sys.stdin))
     elif cmd == "detect-accounts":
@@ -1111,7 +1254,7 @@ def cli(argv):
         print(f"Task #{t['id']} reopened.")
     else:
         print('usage: board.py [show | add "title" ["detail"] | reopen <id> | settings [set k v] | detect-accounts | '
-              'call <tool> [json] | serve | web [--open] | push-usage]')
+              'projects [add NAME] | call <tool> [json] | serve | web [--open] | push-usage]')
         return 1
     return 0
 

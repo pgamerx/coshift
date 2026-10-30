@@ -3,14 +3,23 @@
 Auth: every API call needs "Authorization: Bearer <token>". COSHIFT_TOKENS (env, JSON) maps each
 token to who it is: "ATLAS", "FORGE" (cloud sessions) or "admin" (the board page and the Mac).
 """
-import hmac, json, os, sys, threading
+import hmac, json, os, sys, threading, urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board"))
 os.environ.setdefault("COSHIFT_USAGE_APP", "")  # no Mac apps on the server
 import board as B  # noqa: E402
 
-TOKENS = json.loads(os.environ.get("COSHIFT_TOKENS") or "{}")
+TOKENS = json.loads(os.environ.get("COSHIFT_TOKENS") or os.environ.get("TEAM_BOARD_TOKENS") or "{}")
+# Boards set up before the rename keep their names: cloud sessions there have TEAM_BOARD_URL/TEAM_BOARD_TOKEN.
+LEGACY = not os.environ.get("COSHIFT_TOKENS") and bool(os.environ.get("TEAM_BOARD_TOKENS"))
+
+
+def env_names(text):
+    return text.replace("COSHIFT_URL", "TEAM_BOARD_URL").replace("COSHIFT_TOKEN", "TEAM_BOARD_TOKEN") if LEGACY else text
+
+
+B.RESTART_PROMPT = env_names(B.RESTART_PROMPT)
 LOCK = threading.Lock()  # board.py keeps the caller's identity in globals; one call at a time per instance
 
 HELP = """COSHIFT (cloud). Other Claude accounts work on this project in parallel; this board splits the
@@ -18,7 +27,8 @@ work between you so you never do the same task, and hands work over when one of 
 
 Call it with curl (COSHIFT_URL and COSHIFT_TOKEN are set in your environment). Define once per shell:
   board() { curl -sS -X POST "$COSHIFT_URL/api/call/$1" -H "Authorization: Bearer $COSHIFT_TOKEN" \\
-            -H "X-Session: ${CLAUDE_CODE_SESSION_ID:-}" -H "Content-Type: application/json" -d "${2:-null}"; }
+            -H "X-Session: ${CLAUDE_CODE_SESSION_ID:-}" -H "X-Repo: $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")" \\
+            -H "Content-Type: application/json" -d "${2:-null}"; }
 Then e.g.:  board resume   |   board claim_task   |   board add_note '{"id": 3, "text": "..."}'
 
 START EVERY SESSION WITH: board resume  (your account's saved context summary + your claimed tasks).
@@ -53,6 +63,7 @@ Check the board at least after every task.
 Tools: """ + ", ".join(B.TOOLS) + "  (arguments as JSON; see each tool's fields below)\n" + "\n".join(
     f"  {n}: {json.dumps({k: v['type'] for k, v in props.items()})} required={req}  {d}"
     for n, (_, d, props, req) in B.TOOLS.items())
+HELP = env_names(HELP)
 
 
 HOOK_HELP = """# Install once per repo (commit both on your branch):
@@ -91,6 +102,11 @@ class handler(BaseHTTPRequestHandler):
             raise ValueError("body too large")
         return json.loads(self.rfile.read(n) or b"{}") or {}  # "null" = no arguments
 
+    def project(self):
+        """The page picks a project with ?project=; sessions send their repo's name (no board of its own = main)."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        B.PROJECT = (q.get("project") or [""])[0] or self.headers.get("X-Project") or self.headers.get("X-Repo") or B.MAIN
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/":
@@ -102,12 +118,22 @@ class handler(BaseHTTPRequestHandler):
         if path == "/api/hook":
             with open(os.path.join(os.path.dirname(B.PAGE), "board-context.sh"), encoding="utf-8") as f:
                 script = f.read()
-            return self.send(200, HOOK_HELP + script, "text/plain; charset=utf-8")
+            return self.send(200, env_names(HOOK_HELP + script), "text/plain; charset=utf-8")
         if path == "/api/help":
             return self.send(200, f"You are: {who}\n\n{HELP}\n", "text/plain; charset=utf-8")
         if path == "/api/board" and who == "admin":
             with LOCK:
-                return self.send(200, B.web_state())
+                self.project()
+                st = B.web_state()
+            st["cloud_accounts"] = sorted(n for n in TOKENS.values() if n != "admin")
+            return self.send(200, st)
+        if path == "/api/env" and who == "admin":  # an account's cloud variables, for the setup checklist
+            name = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("account") or [""])[0]
+            tok = next((t for t, n in TOKENS.items() if n == name and n != "admin"), None)
+            if not tok:
+                return self.send(404, {"error": "no such account"})
+            url = "https://" + (self.headers.get("Host") or "")
+            return self.send(200, {"text": env_names(f"COSHIFT_URL={url}\nCOSHIFT_TOKEN={tok}"), "host": self.headers.get("Host")})
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -122,6 +148,7 @@ class handler(BaseHTTPRequestHandler):
                 if tool not in B.TOOLS or who == "admin":
                     return self.send(404, {"error": f"unknown tool {tool}" if who != "admin" else "use an account token"})
                 with LOCK:
+                    self.project()
                     B.ME, B.SID, B.ORG = who, self.headers.get("X-Session") or f"cloud-{who}", ""
                     B.CWD = "cloud: " + (self.headers.get("X-Repo") or "?")
                     text, err = B.run_tool(tool, args)
@@ -130,6 +157,7 @@ class handler(BaseHTTPRequestHandler):
             if who != "admin":
                 return self.send(403, {"error": "forbidden"})
             with LOCK:
+                self.project()
                 self.send(200, {"ok": B.web_post(path, args)})
         except (ValueError, KeyError, TypeError) as e:
             self.send(400, {"error": str(e)})

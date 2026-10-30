@@ -6,7 +6,9 @@
 # It sends the raw token count; the board turns it into a percentage using the account's context window
 # (set in `coshift setup` or `coshift config context_window <tokens> <ACCOUNT>`). COSHIFT_CONTEXT_WINDOW here
 # only decides how often to report (every ~2% of that size).
+COSHIFT_URL=${COSHIFT_URL:-$TEAM_BOARD_URL} COSHIFT_TOKEN=${COSHIFT_TOKEN:-$TEAM_BOARD_TOKEN}  # names before the rename
 [ -n "$COSHIFT_URL" ] && [ -n "$COSHIFT_TOKEN" ] || exit 0
+export COSHIFT_URL COSHIFT_TOKEN
 PY=$(command -v python3 || command -v python) || exit 0  # Windows often names it python
 exec "$PY" -c '
 import json, os, sys, tempfile, urllib.request

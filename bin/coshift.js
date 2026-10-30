@@ -150,20 +150,20 @@ const OS_LABEL = { darwin: "macOS", win32: "Windows", linux: "Linux" };
 
 async function setup(args) {
   banner("setup");
-  console.log(`  Let several Claude Code accounts share one project: split tasks, hand over at limits,\n  restart from a saved summary at a context threshold.\n`);
+  console.log(`  Coshift lets several Claude Code accounts work on your projects together: they split the work
+  into tasks on a shared board, hand over when one nears its limit, and restart from a saved summary
+  when a session's context fills up. This takes about 3 minutes; you can re-run it any time.\n`);
 
-  // 1. system
-  const detected = OS_LABEL[process.platform] ? process.platform : "linux";
-  const order = ["darwin", "win32", "linux"];
-  step(1, 5, "Your system");
-  const sys = await select("Which system is this?", order.map((k) => ({
-    label: OS_LABEL[k], value: k, hint: k === detected ? "detected" : "",
-  })), order.indexOf(detected));
+  // 1. system: detected, nothing to answer
+  step(1, 7, "Checking this computer");
+  const sys = OS_LABEL[process.platform] ? process.platform : "linux";
   python();
   good(`${OS_LABEL[sys]} · ${pyVersion()} · Node ${process.versions.node}`);
+  has("claude") ? good("Claude Code found") : warn(`Claude Code not found. Install it first: ${c.cyan("https://claude.com/claude-code")}`);
 
   // 2. hosting
-  step(2, 5, "Where the board lives");
+  step(2, 7, "Where the board lives");
+  info("The board is the shared to-do list every session reads and writes.");
   const host = await select("Host the board where?", [
     { label: "Vercel", value: "vercel", hint: "free · recommended · open it from any device, works with cloud sessions" },
     { label: "This computer only", value: "local", hint: "no account needed · this machine only" },
@@ -181,7 +181,8 @@ async function setup(args) {
   }
 
   // 3. accounts + context windows
-  step(3, 5, "Your accounts");
+  step(3, 7, "Your accounts");
+  info("One short name per Claude account you'll use (it's how sessions and the board tell them apart).");
   const prev = (remote().names || Object.keys(tokens()).filter((n) => n !== "admin")).join(",");
   const names = (await input("Name your accounts (comma separated)", prev || "ATLAS,FORGE"))
     .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -191,14 +192,15 @@ async function setup(args) {
   for (const n of names) {
     windows[n] = await select(`Context window of ${c.orange(n)}'s sessions?`, [
       { label: "200K tokens", value: 200000, hint: "Pro, and most models" },
-      { label: "1M tokens", value: 1000000, hint: "Max with a 1M-context model (check with /context)" },
+      { label: "1M tokens", value: 1000000, hint: "Max with a 1M-context model" },
+      { label: "Not sure", value: 200000, hint: "uses 200K; the status line corrects it once a session runs" },
     ]);
   }
   const detectedAccts = (() => { try { return JSON.parse(pyOut(BOARD, ["detect-accounts"]).out || "{}"); } catch { return {}; } })();
   const maps = [];
   const orgs = Object.entries(detectedAccts);
   if (orgs.length) {
-    info(`Found ${orgs.length} Claude account${orgs.length > 1 ? "s" : ""} on this computer (for live usage):`);
+    info(`Found ${orgs.length} Claude account${orgs.length > 1 ? "s" : ""} signed in on this computer. Which name is each? (This lets the board show their live limits.)`);
     for (const [org, u] of orgs) {
       const pick = await select(`${u.profile || org.slice(0, 8)} (${u.five_hour_pct}% 5-hour, ${u.weekly_pct}% weekly) is`,
         [...names.map((n) => ({ label: n, value: n })), { label: "Skip", value: "" }]);
@@ -207,7 +209,7 @@ async function setup(args) {
   }
 
   // 4. board
-  step(4, 5, host === "vercel" ? "Create the board on Vercel" : "Create the board on this computer");
+  step(4, 7, host === "vercel" ? "Create the board on Vercel" : "Create the board on this computer");
   const common = ["--names", names.join(","), ...maps, "--json"];
   let result;
   if (host === "local") {
@@ -246,33 +248,90 @@ async function setup(args) {
   for (const n of names) pyOut(BOARD, ["settings", "set", "context_window", String(windows[n]), n]);
   good(`Context windows saved (${names.map((n) => `${n} ${windows[n] >= 1e6 ? windows[n] / 1e6 + "M" : windows[n] / 1000 + "K"}`).join(", ")})`);
 
-  // 5. extras
-  step(5, 5, "Extras");
-  if (has("claude") && (await confirm("Connect desktop Claude Code sessions on this computer to the board?", true))) {
+  // 5. projects
+  step(5, 7, "Projects");
+  info("Each repo can have its own board, so tasks from different projects never mix. A repo without one");
+  info("uses the main board. Pick the project from the dropdown at the top of the board page.");
+  const repoHere = fs.existsSync(path.join(process.cwd(), ".git")) ? path.basename(process.cwd()) : "";
+  if (repoHere && (await confirm(`Give this repo (${repoHere}) its own board?`, true))) {
+    const r = pyOut(BOARD, ["projects", "add"], { cwd: process.cwd() });  // the board names it after the main checkout
+    r.code ? warn(r.err || r.out) : good(r.out);
+  } else info(`Later, inside a repo: ${c.cyan("coshift project add")}  (or "+ New project" on the board page)`);
+
+  // 6. this computer
+  step(6, 7, "Connect this computer");
+  info("Desktop and terminal Claude Code sessions here get the board's tools (claim_task, add_note, ...).");
+  if (has("claude") && (await confirm("Connect Claude Code sessions on this computer to the board?", true))) {
     const r = run("claude", ["mcp", "add", "--scope", "user", "coshift", "--", result.python, result.link, "serve"], { stdio: "ignore" });
     r === 0 ? good("Desktop sessions connected (new sessions get the board tools)") : warn("Couldn't add it; it may already be there. Check: claude mcp list");
   }
-  if (host === "vercel" && orgs.length && (await confirm("Send this computer's live usage to the board every minute?", true))) {
+  if (host === "vercel" && orgs.length && (await confirm("Send this computer's live usage (5-hour and weekly %) to the board every minute?", true))) {
     await pusher("install");
   }
+
+  // 7. cloud sessions: each account's variables, then the context hook in the repo
+  step(7, 7, "Cloud sessions (claude.ai/code)");
+  let cloud = false;
+  if (host === "vercel" && (await confirm("Will you also run cloud sessions on claude.ai/code?", true))) {
+    cloud = true;
+    info("Each account needs its own two variables in its cloud environment. One at a time:");
+    for (const n of names) {
+      console.log(`
+  ${c.orange("●")} ${c.bold(n)}: sign in to claude.ai as ${n}, open Claude Code → your environment → Edit,`);
+      console.log(`    paste these into ${c.bold("Environment variables")}, and allow the board under ${c.bold("Network access")}.`);
+      env(n);
+      await input(`Saved in ${n}'s environment? Press Enter for the next`);
+    }
+    console.log(`
+  ${c.bold("Context hook")}: cloud sessions report how full their context is through a small hook that`);
+    console.log(`  lives in your repo (it does nothing without the variables, so it's safe for anyone else).`);
+    const repo = await input("Add it to which repo? (folder path, empty to skip)", fs.existsSync(path.join(process.cwd(), ".git")) ? process.cwd() : "");
+    if (repo) hookInstall(repo);
+    else info(`Later, in your repo: ${c.cyan("coshift hook install")}`);
+  } else if (host === "vercel") info(`Later: ${c.cyan("coshift env NAME")} for each account, and ${c.cyan("coshift hook install")} in your repo.`);
+  else info("Cloud sessions can't reach a board on this computer; desktop sessions can.");
 
   console.log();
   const lines = [`${sym.ok} ${c.bold("Coshift is set up")}`, ""];
   if (host === "vercel") {
-    lines.push(`Board      ${c.cyan(result.url)}`, `Page key   ${c.cyan("coshift env admin")}`, "",
-      `Next, for each account, in claude.ai/code → environment settings:`,
-      ...names.map((n) => `  ${c.orange(n.padEnd(8))} ${c.cyan(`coshift env ${n}`)}  ${c.dim("(copies its variables)")}`),
-      "", `Then start a session with:`);
+    lines.push(`Board      ${c.cyan(result.url)}`, `Page key   ${c.cyan("coshift env admin")}`, "");
+    if (!cloud) lines.push(`Cloud sessions: ${c.cyan("coshift env NAME")} per account, ${c.cyan("coshift hook install")} per repo`, "");
   } else {
-    lines.push(`Board      ${c.cyan("coshift web --open")}`, "", "Start a desktop session in your project with:");
+    lines.push(`Board      ${c.cyan("coshift open")}`, "");
   }
-  lines.push(c.dim("  Use the Coshift board: split <goal> into tasks, then claim one."));
-  lines.push("", `Everything else: ${c.cyan("coshift")}`);
+  lines.push(c.bold("What now:"),
+    `  1. Open the board (${c.cyan("coshift open")}). Anything still missing shows there as a checklist.`,
+    `  2. Start a session in your project (${c.cyan("coshift run")} picks the account with most limit left)`,
+    `     and tell it: ${c.dim("Use the Coshift board: split <goal> into tasks, then claim one.")}`,
+    `  3. Start more sessions on other accounts with: ${c.dim("Use the Coshift board and claim the next task.")}`,
+    "", `Everything else: ${c.cyan("coshift")}  (menu)   ·   check the setup: ${c.cyan("coshift doctor")}`);
   box(lines);
   console.log();
 }
 
 // ---------- other commands ----------
+const HOOK_CMD = 'sh "$CLAUDE_PROJECT_DIR/.claude/hooks/board-context.sh"';
+function hookInstall(dir = process.cwd()) {
+  // the context hook for cloud sessions: the script plus a PostToolUse entry in the repo's .claude/settings.json
+  const root = path.resolve(dir);
+  if (!fs.existsSync(root)) return bad(`No folder ${root}`);
+  const script = path.join(root, ".claude", "hooks", "board-context.sh");
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.copyFileSync(path.join(PKG, "board", "board-context.sh"), script);
+  fs.chmodSync(script, 0o755);
+  const sp = path.join(root, ".claude", "settings.json");
+  const st = readJson(sp, null);
+  if (st === null && fs.existsSync(sp)) return bad(`${sp} isn't valid JSON; add the hook by hand: coshift hook`);
+  const conf = st || {};
+  const post = ((conf.hooks = conf.hooks || {}).PostToolUse = conf.hooks.PostToolUse || []);
+  if (!post.some((m) => (m.hooks || []).some((h) => String(h.command || "").includes("board-context.sh")))) {
+    post.push({ matcher: "*", hooks: [{ type: "command", command: HOOK_CMD }] });
+    fs.writeFileSync(sp, JSON.stringify(conf, null, 2) + "\n");
+  }
+  good(`Context hook added to ${root} (.claude/hooks/board-context.sh, .claude/settings.json)`);
+  info("Commit both files so cloud sessions get them.");
+}
+
 function env(name) {
   const t = tokens();
   const url = remote().url;
@@ -361,8 +420,8 @@ function doctor() {
   check(Object.keys(accts).length > 0, `Live usage: ${Object.keys(accts).length} Claude account(s) found on this computer`,
     "No live usage source on this computer (optional; sessions report their own)", true);
   if (has("claude")) {
-    const r = spawnSync("claude", ["mcp", "get", "coshift"], { encoding: "utf8", shell: IS_WIN });
-    check(r.status === 0, "Desktop sessions connected (MCP)", "Desktop sessions not connected: coshift setup → Extras");
+    const got = (n) => spawnSync("claude", ["mcp", "get", n], { encoding: "utf8", shell: IS_WIN }).status === 0;
+    check(got("coshift") || got("team-board"), "Desktop sessions connected (MCP)", "Desktop sessions not connected: coshift setup → Connect this computer");
   }
   console.log();
 }
@@ -641,11 +700,13 @@ async function shell() {
     const pick = await select("What do you want to do?", [
       { label: "Accounts", value: "accounts", hint: "live limits of every account" },
       { label: "Start Claude Code", value: "run", hint: "as the account with most limit left" },
-      { label: "Board status", value: "status", hint: "sessions and tasks" },
+      { label: "Board status", value: "status", hint: "sessions and tasks of this repo's project" },
+      { label: "Projects", value: "projects", hint: "list them, or give this repo its own board" },
       { label: "Open the board page", value: "open" },
       { label: "Settings", value: "config", hint: "stop lines, context windows, phone alerts" },
       ...(mode() === "vercel" ? [
         { label: "Cloud variables for an account", value: "env", hint: "copy to claude.ai/code" },
+        { label: "Add the context hook to a repo", value: "hook", hint: "cloud sessions report their context" },
         { label: "Add an account / new token", value: "account" },
         { label: "Redeploy the board", value: "deploy" },
         { label: "Usage pusher", value: "pusher", hint: "send live limits every minute" },
@@ -658,6 +719,11 @@ async function shell() {
     console.log();
     if (pick === "quit") return;
     if (pick === "status") py(BOARD, ["show"]);
+    if (pick === "projects") {
+      py(BOARD, ["projects"]);
+      if (fs.existsSync(path.join(process.cwd(), ".git")) && (await confirm("Give this repo its own board?", false))) py(BOARD, ["projects", "add"]);
+    }
+    if (pick === "hook") hookInstall(await input("Repo folder", process.cwd()));
     if (pick === "accounts") accounts();
     if (pick === "run") runAs([]);
     if (pick === "open") py(BOARD, ["web", "--open"]);
@@ -681,7 +747,7 @@ async function shell() {
   }
 }
 
-const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accounts, one project
+const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accounts, one shared board per project
 
   ${c.cyan("coshift")}                     interactive menu
   ${c.cyan("coshift setup")}               guided setup (Vercel or this computer)
@@ -690,7 +756,8 @@ const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accou
   ${c.cyan("coshift login NAME")}          add an account (its own Claude Code sign-in)
   ${c.cyan("coshift run [NAME]")}          start Claude Code as NAME, or the one with most limit left
   ${c.cyan("coshift map [NAME|remove]")}   tie this folder to an account
-  ${c.cyan("coshift status")}              sessions and tasks
+  ${c.cyan("coshift status")}              sessions and tasks (this repo's project)
+  ${c.cyan("coshift project [add [NAME]]")} list projects / give this repo its own board
   ${c.cyan("coshift open")}                open the board page
   ${c.cyan("coshift env NAME|admin")}      an account's cloud variables (copied) / the page key
   ${c.cyan("coshift config [k v [ACCT]]")} show or change settings (stop lines, context windows, alerts)
@@ -699,7 +766,7 @@ const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accou
   ${c.cyan("coshift tray [remove]")}       menu bar (macOS) / tray icon (Windows, Linux) with limits and alerts
   ${c.cyan("coshift deploy")}              redeploy the board after upgrading
   ${c.cyan("coshift doctor")}              check the whole setup
-  ${c.cyan("coshift hook")}                print the context hook for a repo
+  ${c.cyan("coshift hook install [DIR]")}  add the context hook to a repo (or print it: coshift hook)
   ${c.cyan("coshift serve | web | call")}  board internals (MCP server, local page, tools)
   ${c.cyan("coshift claude-switch ...")}   macOS: swap the Claude desktop app between accounts
 
@@ -730,7 +797,8 @@ async function main() {
       if (!fs.existsSync(path.join(APP, ".vercel"))) die("no Vercel board yet. Run: coshift setup");
       syncApp();
       return process.exit(run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP }));
-    case "hook": return process.stdout.write(fs.readFileSync(path.join(PKG, "board", "board-context.sh")));
+    case "project": case "projects": return process.exit(py(BOARD, ["projects", ...(rest[0] === "add" ? ["add", ...rest.slice(1)] : [])]));
+    case "hook": return rest[0] === "install" ? hookInstall(rest[1]) : process.stdout.write(fs.readFileSync(path.join(PKG, "board", "board-context.sh")));
     case "claude-switch":
       if (process.platform !== "darwin") die("claude-switch swaps the Claude desktop app on macOS only.");
       return process.exit(run("bash", [path.join(PKG, "mac", "claude-switch"), ...rest])); // npm drops the exec bit

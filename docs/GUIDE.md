@@ -5,6 +5,7 @@ Everything beyond the [README](../README.md): setup paths, accounts, cloud sessi
 - [Setup](#setup)
 - [Accounts](#accounts)
 - [Working with the board](#working-with-the-board)
+- [Projects](#projects)
 - [Cloud sessions](#cloud-sessions)
 - [The context hook](#the-context-hook)
 - [Live limits](#live-limits)
@@ -18,15 +19,19 @@ Everything beyond the [README](../README.md): setup paths, accounts, cloud sessi
 
 ## Setup
 
-Requirements: Node 18+ and Python 3.9+ on Windows, macOS or Linux. Install with `npm install -g coshift` or `brew install pgamerx/tap/coshift`, then run `coshift setup`. It asks five things:
+Requirements: Node 18+ and Python 3.9+ on Windows, macOS or Linux. Install with `npm install -g coshift` or `brew install pgamerx/tap/coshift`, then run `coshift setup`. It walks through seven steps and explains each one as it goes:
 
-1. **Your system.** Detected for you; you can pick another with the arrow keys.
+1. **Checking this computer.** Your system, Python and Node, and whether Claude Code is installed. Nothing to answer.
 2. **Where the board lives.**
    - **Vercel** (free, recommended). The board runs on your own Vercel project with free Upstash Redis storage, so you can open it from your phone and cloud sessions can reach it. Setup creates the project, adds the storage (accept Upstash's terms when asked), creates one token per account and deploys. You need a Vercel account and the Vercel CLI (`npm i -g vercel`).
    - **This computer only.** No account needed. The page runs at `http://127.0.0.1` and only this computer's sessions can use it: no phone, no cloud sessions. You can switch later by running setup again.
-3. **Your accounts.** Any names, any number, e.g. `ATLAS,FORGE,NOVA`.
-4. **Each account's context window.** 200K (Pro and most models) or 1M (Max with a 1M-context model; check with `/context`). Sessions started with `coshift run` also report the real size automatically.
-5. **Extras.** Connect desktop sessions to the board (MCP), and send live usage from this computer every minute.
+3. **Your accounts.** Any names, any number, e.g. `ATLAS,FORGE,NOVA`, and each one's context window: 200K (Pro and most models), 1M (Max with a 1M-context model), or "not sure" (the status line corrects it once a session runs). Claude accounts already signed in on this computer are matched to the names so the board shows their live limits.
+4. **Create the board** on Vercel or on this computer.
+5. **Projects.** Run inside a repo, setup offers to give it its own board (see [Projects](#projects)).
+6. **Connect this computer.** Desktop and terminal sessions here get the board's tools (MCP), and live usage is sent every minute.
+7. **Cloud sessions.** If you use claude.ai/code, setup goes through your accounts one at a time: it shows and copies that account's two variables, tells you where to paste them, and waits. Then it adds the [context hook](#the-context-hook) to a repo you name.
+
+It ends with what to do next. Anything still missing also shows at the top of the board page as a checklist that ticks itself off once the board sees each part working (live usage, a desktop session, cloud sessions, the context hook, phone alerts). On a Vercel board the checklist copies each account's cloud variables for you.
 
 Everything you need afterwards is in `~/.coshift/` (readable only by you): `cloud-setup.txt`, `tokens.json`, `remote.json`. Re-running setup keeps your tokens. After upgrading Coshift, `coshift deploy` updates your board.
 
@@ -60,6 +65,16 @@ Sessions follow a protocol the board gives them when they connect:
 
 From the page you can add tasks (with files and order), answer questions, add notes, reopen or cancel tasks (cancelled tasks are kept, just hidden), send a one-off message to one account or all, and write **guidance**: standing rules every session sees with each board check until you remove them. Add `?theme=light` or `?theme=dark` to the page's address to force a theme.
 
+## Projects
+
+Each repo can have a board of its own, so tasks, notes, messages and guidance from different projects never mix. The account limits, settings and port ranges are shared by all of them.
+
+- **Make one:** `coshift project add` inside the repo (it takes the repo's folder name; from a worktree, the main checkout's), or **+ New project** on the page, using the repo's folder name.
+- **Which board a session uses:** the project named after its git repo, if there is one; otherwise the **main board**. Boards from before projects existed are the main board, so nothing moves. `COSHIFT_PROJECT=name` overrides it.
+- **On the page:** the project tabs sit right under the accounts. Each shows how many tasks it has and a dot when a session there is waiting for you. Everything below the tabs belongs to the selected project. `?project=name` in the address opens one directly.
+- **Menu bar and tray** add up all projects, so a question from any project shows there.
+- `coshift project` lists the projects and marks the one this folder uses.
+
 ### Starter prompts
 
 New goal:
@@ -74,7 +89,7 @@ A session that already has its own task list: copy the "Starter prompts" text fr
 
 Cloud sessions on claude.ai/code reach a Vercel board over HTTPS. For each account, in its cloud environment settings:
 
-- **Environment variables:** `COSHIFT_URL` and that account's `COSHIFT_TOKEN`. `coshift env NAME` prints them and copies them to the clipboard.
+- **Environment variables:** `COSHIFT_URL` and that account's `COSHIFT_TOKEN`. `coshift setup` walks you through this, `coshift env NAME` prints and copies them, and the board page's setup checklist has a copy button per account. Boards set up before the rename keep working with `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN` (and `TEAM_BOARD_TOKENS` on Vercel); nothing needs renaming.
 - **Network access:** allow your board's host (e.g. `my-coshift.vercel.app`).
 
 The two-line prompt that starts or restarts a cloud session, the same for every account:
@@ -90,7 +105,7 @@ Start with board resume and continue from your saved context.
 
 A Claude Code `PostToolUse` hook reports how full each session's context is. At the stop line (70% by default) the session takes no new task, finishes the current one, saves a summary with `save_context`, and gives you the two-line prompt. The next session's `resume` returns that account's latest summary (the last five are kept) and its claimed tasks.
 
-Install it once per repository: have one session fetch `$COSHIFT_URL/api/hook` and follow its steps, or run `mkdir -p .claude/hooks && coshift hook > .claude/hooks/board-context.sh` and add the `settings.json` entry `/api/hook` shows. It does nothing unless `COSHIFT_URL` and `COSHIFT_TOKEN` are set, so it's harmless for anyone else in the repository. The hook sends raw token counts; the board turns them into percentages using each account's context window.
+Install it once per repository with `coshift hook install` (inside the repo, or pass its path), then commit `.claude/hooks/board-context.sh` and `.claude/settings.json`; it adds its entry to an existing `settings.json` without touching the rest. In a cloud session you can also have it fetch `$COSHIFT_URL/api/hook` and follow the steps. It does nothing unless `COSHIFT_URL` and `COSHIFT_TOKEN` are set, so it's harmless for anyone else in the repository. The hook sends raw token counts; the board turns them into percentages using each account's context window.
 
 ## Live limits
 
@@ -104,7 +119,7 @@ Cloud sessions can't read their own plan usage; without one of these sources the
 
 ## Settings
 
-Settings live on the board itself, so a change applies to every session at once without a redeploy. Change them on the page (Setup → Settings) or with `coshift config`.
+Settings live on the board itself, so a change applies to every session at once without a redeploy. Change them on the page (the ⚙ button at the top, next to light/dark) or with `coshift config`. They are shared by every project.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -136,7 +151,8 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `coshift setup` | Guided setup |
 | `coshift demo [port]` | The page with made-up data |
 | `coshift accounts` / `login` / `run` / `map` | See [Accounts](#accounts) |
-| `coshift status` | Sessions and tasks in the terminal |
+| `coshift status` | Sessions and tasks in the terminal (this folder's project) |
+| `coshift project [add [NAME]]` | List projects, or give this repo its own board |
 | `coshift open` | Open the board page |
 | `coshift env NAME` / `coshift env admin` | An account's cloud variables / the page key, copied to the clipboard |
 | `coshift config [key value [ACCOUNT]]` | Show or change settings |
@@ -145,7 +161,7 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `coshift tray [remove]` | Menu bar / tray |
 | `coshift deploy` | Redeploy the board after upgrading |
 | `coshift doctor` | Check the whole setup |
-| `coshift hook` | Print the context hook |
+| `coshift hook install [DIR]` / `coshift hook` | Add the context hook to a repo / print it |
 | `coshift statusline NAME` | The status line command (Claude Code calls it) |
 | `coshift serve`, `web`, `call` | Board internals: MCP server, local page, run a tool |
 

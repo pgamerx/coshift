@@ -14,7 +14,7 @@ m = lambda minutes: now - minutes * 60  # noqa: E731
 
 
 def task(i, title, detail, status, owner="", notes=(), session="", files=(), deps=(), ask=None):
-    return {"id": i, "title": title, "detail": detail, "status": status, "owner": owner, "created_by": "ATLAS",
+    return {"id": i, "title": title, "detail": detail, "status": status, "owner": owner, "created_by": "WORK",
             "updated": m(3 + i), "session": session, "files": list(files), "depends_on": list(deps),
             **({"needs_input": {"q": ask, "t": m(2), "by": owner}} if ask else {}),
             "notes": [{"t": m(mins), "by": by, "text": text} for mins, by, text in notes]}
@@ -23,47 +23,65 @@ def task(i, title, detail, status, owner="", notes=(), session="", files=(), dep
 demo = {
     "next_id": 9,
     "usage": {
-        "ATLAS": {"five_hour_pct": 62, "weekly_pct": 41, "five_hour_resets": "1h 48m", "weekly_resets": "4d 2h", "at": m(1)},
-        "FORGE": {"five_hour_pct": 18, "weekly_pct": 87, "five_hour_resets": "4h 10m", "weekly_resets": "1d 9h", "at": m(1)},
+        "WORK": {"five_hour_pct": 62, "weekly_pct": 41, "five_hour_resets": "1h 48m", "weekly_resets": "4d 2h", "at": m(1)},
+        "PERSONAL": {"five_hour_pct": 18, "weekly_pct": 87, "five_hour_resets": "4h 10m", "weekly_resets": "1d 9h", "at": m(1)},
     },
     "sessions": {
-        "a1": {"account": "ATLAS", "cwd": "cloud: acme-shop", "last": m(1), "tool": "add_note", "context_pct": 64},
-        "f1": {"account": "FORGE", "cwd": "cloud: acme-shop", "last": m(2), "tool": "claim_task", "context_pct": 31},
+        "a1": {"account": "WORK", "cwd": "cloud: storefront", "last": m(1), "tool": "add_note", "context_pct": 64},
+        "f1": {"account": "PERSONAL", "cwd": "cloud: storefront", "last": m(2), "tool": "claim_task", "context_pct": 31},
+        "d1": {"account": "WORK", "cwd": "~/code/storefront", "last": m(40), "tool": "board_status"},
     },
     "tasks": [
         task(1, "Checkout: add address validation", "Files: src/checkout/*. Done = invalid postcodes rejected, tests green.",
-             "claimed", "ATLAS", [(25, "ATLAS", "Schema done; wiring the form next. Branch: feat/checkout-validation"),
-                                  (4, "ATLAS", "Form wired, 2 tests left to fix")], "a1",
+             "claimed", "WORK", [(25, "WORK", "Schema done; wiring the form next. Branch: feat/checkout-validation"),
+                                  (4, "WORK", "Form wired, 2 tests left to fix")], "a1",
              files=["src/checkout/"], ask="Reject PO boxes, or just warn?"),
         task(2, "Orders list: pagination", "src/orders/List.tsx + API ?page=. Done = 50 per page, URL keeps the page.",
-             "claimed", "FORGE", [(6, "FORGE", "API paging done, starting the UI")], "f1",
+             "claimed", "PERSONAL", [(6, "PERSONAL", "API paging done, starting the UI")], "f1",
              files=["src/orders/", "api/orders.ts"]),
         task(3, "Emails: order-shipped template", "templates/shipped.mjml. Done = renders in the preview tool.", "open",
              files=["templates/shipped.mjml"], deps=(2,)),
         task(4, "Fix flaky cart test", "tests/cart.spec.ts fails 1 in 10 runs on CI.", "open",
              files=["tests/cart.spec.ts"]),
         task(5, "Product page: image zoom", "Use the existing Lightbox component. Mobile pinch to zoom.", "open"),
-        task(6, "Search: debounce input", "Done = one request per 300 ms of typing.", "done", "FORGE",
-             [(90, "FORGE", "done: debounced with useDebounce, added a test")]),
-        task(7, "Set up staging deploy", "", "done", "ATLAS", [(140, "ATLAS", "done: preview deploys per branch")]),
+        task(6, "Search: debounce input", "Done = one request per 300 ms of typing.", "done", "PERSONAL",
+             [(90, "PERSONAL", "done: debounced with useDebounce, added a test")]),
+        task(7, "Set up staging deploy", "", "done", "WORK", [(140, "WORK", "done: preview deploys per branch")]),
         task(8, "Old promo banner", "", "cancelled"),
     ],
     "guidance": [
         {"id": 1, "t": m(300), "to": "all", "text": "Use pnpm, not npm. Run the tests before marking a task done.",
-         "active": True, "read_by": ["ATLAS", "FORGE"]},
-        {"id": 2, "t": m(200), "to": "FORGE", "text": "Weekly limit is high: keep tasks small, no database migrations.",
-         "active": True, "read_by": ["FORGE"]},
+         "active": True, "read_by": ["WORK", "PERSONAL"]},
+        {"id": 2, "t": m(200), "to": "PERSONAL", "text": "Weekly limit is high: keep tasks small, no database migrations.",
+         "active": True, "read_by": ["PERSONAL"]},
     ],
-    "messages": [{"t": m(12), "to": "ATLAS", "text": "After checkout, look at the orders bug Priya reported.",
-                  "read_by": ["ATLAS"]}],
-    "contexts": {"ATLAS": [{"t": m(180), "session": "a0", "text":
+    "messages": [{"t": m(12), "to": "WORK", "text": "After checkout, look at the orders bug Priya reported.",
+                  "read_by": ["WORK"]}],
+    "contexts": {"WORK": [{"t": m(180), "session": "a0", "text":
         "GOAL: ship checkout v2 this week.\nDONE: payment step, staging deploys.\nSTATE: on feat/checkout-validation, "
         "3 commits ahead of main.\nNEXT: finish address validation (#1), then the orders bug.\nGOTCHAS: the postcode API "
         "rate-limits at 10/s in staging."}]},
 }
+# The shop tasks are the "storefront" project; the main board keeps work that spans repos.
+shared = {k: demo.pop(k) for k in ("usage",)}
+main = {"next_id": 2, **shared, "sessions": {}, "messages": [], "guidance": [],
+        "tasks": [task(1, "Upgrade Node to 24 in every repo", "CI images and .nvmrc files. One PR per repo.", "open")],
+        "projects": {"storefront": {"t": m(900)}, "docs-site": {"t": m(600)}, "mobile-app": {"t": m(500)}}}
 with open(os.path.join(home, "board.json"), "w", encoding="utf-8") as f:
-    json.dump(demo, f)
+    json.dump(main, f)
+os.makedirs(os.path.join(home, "boards"))
+for name, b in {
+    "storefront": demo,
+    "docs-site": {"next_id": 3, "tasks": [
+        task(1, "Guide: rewrite the quick start", "docs/quick-start.md. Done = a new user is set up in 5 minutes.",
+             "open", files=["docs/quick-start.md"]),
+        task(2, "Fix broken links after the move", "", "done", "PERSONAL", [(50, "PERSONAL", "done: 14 links fixed")])]},
+    "mobile-app": {"next_id": 3, "tasks": [task(1, "Push notifications on iOS", "", "open"),
+                                           task(2, "Dark mode for the settings screen", "", "open")]},
+}.items():
+    with open(os.path.join(home, "boards", name + ".json"), "w", encoding="utf-8") as f:
+        json.dump(b, f)
 
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 7788
-print(f"Demo board at http://127.0.0.1:{port}  (data in {home}; Ctrl-C to stop)")
+print(f"Demo board at http://127.0.0.1:{port}/?project=storefront  (data in {home}; Ctrl-C to stop)")
 board.web(port)

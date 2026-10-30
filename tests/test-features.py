@@ -134,5 +134,39 @@ check("five accounts each get a different task", len(set(got.values())) == 5, go
 txt, _ = as_("FIVE", "s5-FIVE", "board_status")
 check("status lists all five accounts", all(f"{n}: 5h" in txt for n in five), txt[:300])
 
+# ---- projects: own tasks per repo, shared usage/settings, main board for repos without one ----
+B.PROJECT = "shop"
+txt, _ = as_("A", "pa", "add_task", title="main-board task (no shop project yet)")
+main_id = int(txt.split("#")[1].split(":")[0])
+check("a repo without a project uses the main board", main_id > 1, txt)
+B.add_project("shop")
+txt, _ = as_("A", "pa", "add_task", title="shop task")
+check("a project's board numbers its own tasks from 1", "#1:" in txt, txt)
+as_("A", "pa", "report_usage", five_hour_pct=33, weekly_pct=44)
+txt, _ = as_("A", "pa", "board_status")
+check("project status says which project, only its tasks", "Project: shop" in txt and "shop task" in txt
+      and "main-board task" not in txt, txt[:400])
+B.PROJECT = B.MAIN
+with B.board() as b:
+    check("usage reported in a project lands on the shared usage", b["usage"]["A"]["five_hour_pct"] == 33, b["usage"])
+    check("main board keeps its tasks", any(t["title"].startswith("main-board") for t in b["tasks"]))
+with B.board(write=True) as b:
+    B.set_setting(b, "stop_week", 77)
+B.PROJECT = "shop"
+with B.board() as b:
+    check("settings are shared with projects", B.settings_of(b)["stop_week"] == 77)
+st = B.web_state()
+check("page state lists projects with counts", st["project"] == "shop" and
+      {p["name"] for p in st["projects"]} == {"default", "shop"}, st["projects"])
+check("page state has setup steps", any(x["id"] == "usage" and x["done"] for x in st["setup"]), st["setup"])
+txt, err = as_("A", "pa", "claim_task")
+check("claiming in a project only offers its tasks", "shop task" in txt, txt)
+try:
+    B.add_project("default")
+    check("'default' can't be a project name", False)
+except ValueError:
+    check("'default' can't be a project name", True)
+B.PROJECT = ""
+
 print(f"== failures: {FAILS}")
 sys.exit(1 if FAILS else 0)
