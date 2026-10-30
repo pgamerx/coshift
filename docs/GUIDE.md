@@ -204,4 +204,8 @@ bash mac/tests/test-sandbox.sh   # desktop-app switcher, in a throwaway folder
 
 No dependencies, no network, nothing touches your real data. CI runs them on Windows, macOS and Linux and smoke-tests the npm package on all three. The animation and diagrams are a small [Remotion](https://www.remotion.dev) project in `docs/animation` (`npm i && npm run gif`).
 
-**Releasing:** bump `version` in `package.json`, commit, `npm publish`, `git tag vX.Y.Z && git push --tags`. Once `npx coshift@X.Y.Z --version` works (npm takes a few minutes), update the version and `sha256` in [homebrew-tap](https://github.com/pgamerx/homebrew-tap)'s `Formula/coshift.rb`.
+**Releasing:** bump `version` in `package.json`, write the notes in `docs/releases/vX.Y.Z.md`, commit and push, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow runs the tests, publishes to npm, creates the GitHub release with those notes and the npm tarball, and updates the [Homebrew tap](https://github.com/pgamerx/homebrew-tap). Re-running it after a failed step is safe; finished steps are skipped.
+
+One-time setup for the workflow:
+1. **npm:** on npmjs.com → coshift → Settings → Trusted Publisher, add GitHub Actions with owner `pgamerx`, repository `coshift`, workflow `release.yml`. npm then accepts publishes from that workflow without a token or a browser login.
+2. **Homebrew tap:** create a fine-grained GitHub token with *Contents: read and write* on `pgamerx/homebrew-tap` only, and save it as the `HOMEBREW_TAP_TOKEN` secret of `pgamerx/coshift` (`gh secret set HOMEBREW_TAP_TOKEN -R pgamerx/coshift`). Without it the workflow does the rest and leaves a warning.

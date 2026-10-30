@@ -2,8 +2,7 @@
 # frozen_string_literal: true
 
 # Homebrew formula for Coshift. Lives in github.com/pgamerx/homebrew-tap as Formula/coshift.rb.
-# On a new release: bump the version in `url` and set sha256 to the npm tarball's hash
-# (curl -sL <url> | shasum -a 256).
+# The release workflow (.github/workflows/release.yml) bumps `url` and `sha256` in the tap on every version tag.
 class Coshift < Formula
   desc "Shared task board for running several Claude Code accounts on one project"
   homepage "https://github.com/pgamerx/coshift"

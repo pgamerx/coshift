@@ -1,5 +1,8 @@
 name: tests
-on: [push, pull_request]
+on:
+  push: { branches: ["**"] }  # tags run these through release.yml instead
+  pull_request:
+  workflow_call:
 
 jobs:
   board:

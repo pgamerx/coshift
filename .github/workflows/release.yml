@@ -1,0 +1,74 @@
+# Push a version tag (git tag v0.4.0 && git push origin v0.4.0) and this does the rest:
+# tests, npm publish, the GitHub release (notes from docs/releases/<tag>.md) and the Homebrew tap.
+# One-time setup: npm trusted publisher for this workflow (no npm token needed), and a
+# HOMEBREW_TAP_TOKEN secret that can push to pgamerx/homebrew-tap. See docs/GUIDE.md, "Releasing".
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # the GitHub release
+  id-token: write  # npm trusted publishing (OIDC) and provenance
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", registry-url: "https://registry.npmjs.org" }
+
+      - name: tag matches package.json
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but package.json says $v"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: publish to npm
+        run: |
+          if npm view "coshift@$VERSION" version >/dev/null 2>&1; then
+            echo "coshift@$VERSION is already on npm; skipping publish"  # a re-run after a later step failed
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: wait until npm serves the tarball
+        run: |
+          url="https://registry.npmjs.org/coshift/-/coshift-$VERSION.tgz"
+          for i in $(seq 1 40); do
+            curl -sfL "$url" -o coshift.tgz && break
+            sleep 15
+          done
+          [ -s coshift.tgz ] || { echo "npm never served $url"; exit 1; }
+          echo "SHA256=$(sha256sum coshift.tgz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          mv coshift.tgz "coshift-$VERSION.tgz"
+
+      - name: GitHub release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          notes="docs/releases/$GITHUB_REF_NAME.md"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release exists; skipping"
+          elif [ -f "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Coshift $VERSION" --notes-file "$notes" "coshift-$VERSION.tgz"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Coshift $VERSION" --generate-notes "coshift-$VERSION.tgz"
+          fi
+
+      - name: Homebrew tap
+        env: { TAP_TOKEN: "${{ secrets.HOMEBREW_TAP_TOKEN }}" }
+        run: |
+          [ -n "$TAP_TOKEN" ] || { echo "::warning::HOMEBREW_TAP_TOKEN isn't set; update the tap by hand"; exit 0; }
+          git clone -q "https://x-access-token:$TAP_TOKEN@github.com/pgamerx/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s#coshift-[0-9][^/]*\.tgz\"#coshift-$VERSION.tgz\"#; s#sha256 \"[0-9a-f]+\"#sha256 \"$SHA256\"#" Formula/coshift.rb
+          git diff --quiet && { echo "tap already on $VERSION"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "coshift $VERSION"
+          git push -q
