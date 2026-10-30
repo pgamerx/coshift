@@ -43,7 +43,7 @@ jobs:
           coshift call help | grep -q "several Claude accounts"
           coshift config stop_5h 80 | grep -q "stop_5h = 80"
           coshift config context_window 1000000 ATLAS | grep -q "1000000"
-          (coshift demo 7788 &) && sleep 4 && curl -sf http://127.0.0.1:7788/ | grep -q "team board"
+          (coshift demo 7788 &) && sleep 4 && curl -sf http://127.0.0.1:7788/ | grep -q "<title>Coshift"
 
   windows-tray:
     runs-on: windows-latest
