@@ -55,7 +55,7 @@ PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"
 # the board is the local file only.
 def _remote_config():
     try:
-        with open(os.path.join(HOME, "remote.json")) as f:
+        with open(os.path.join(HOME, "remote.json"), encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
@@ -182,7 +182,7 @@ def board(write=False):
     with open(LOCK, "a+") as lk:
         _lock(lk)
         try:
-            with open(BOARD) as f:
+            with open(BOARD, encoding="utf-8") as f:
                 b = json.load(f)
         except FileNotFoundError:
             b = {"next_id": 1, "tasks": [], "usage": {}}
@@ -193,7 +193,7 @@ def board(write=False):
         yield b
         if write:
             fd, tmp = tempfile.mkstemp(dir=HOME, prefix=".board.")
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(b, f, indent=1)
             os.replace(tmp, BOARD)
 
@@ -741,12 +741,12 @@ def app_usage():
     """Latest usage sample the desktop app itself saved for each profile (plan-usage-history.json),
     keyed by org id, so the page shows every account before any session reports."""
     try:
-        with open(os.path.join(PROFILES, ".active")) as f:
+        with open(os.path.join(PROFILES, ".active"), encoding="utf-8") as f:
             active = f.read().strip() or "active"
     except OSError:
         active = "active"
     try:
-        with open(NAMES) as f:
+        with open(NAMES, encoding="utf-8") as f:
             names = json.load(f)
     except (OSError, ValueError):
         names = {}
@@ -757,7 +757,7 @@ def app_usage():
     out = {}
     for name, d in folders:
         try:
-            with open(os.path.join(d, "plan-usage-history.json")) as f:
+            with open(os.path.join(d, "plan-usage-history.json"), encoding="utf-8") as f:
                 smp = json.load(f)["samples"][-1]
             org, u, at = smp["org"], smp["u"], smp["t"] / 1000
         except (OSError, ValueError, KeyError, IndexError, TypeError):
@@ -947,7 +947,7 @@ def web(port):
                 return self.send(403, {"error": "forbidden"})
             self.path = self.path.split("?")[0]  # e.g. /?theme=light
             if self.path == "/":
-                with open(PAGE) as f:
+                with open(PAGE, encoding="utf-8") as f:
                     return self.send(200, f.read(), "text/html; charset=utf-8")
             if self.path == "/api/board":
                 return self.send(200, web_state())

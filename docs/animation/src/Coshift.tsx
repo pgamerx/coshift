@@ -77,7 +77,7 @@ const Chip: React.FC<{ id: number; title: string; x: number; y: number; done?: b
 
 const CAPTIONS: [number, number, string][] = [
   [85, 175, "Each session claims its own task from the shared board"],
-  [175, 300, "Two accounts work in parallel, never on the same task"],
+  [175, 300, "Every account works in parallel, never on the same task"],
   [300, 425, "ATLAS hits its 5-hour limit and hands its task over, with notes"],
   [425, 505, "FORGE's context reaches 70%: it saves a summary to the board"],
   [505, 625, "A fresh session resumes from two lines. No compaction."],
@@ -131,7 +131,7 @@ export const Coshift: React.FC = () => {
 
       <AbsoluteFill style={{ opacity: scene }}>
         <div style={{ position: "absolute", left: 24, top: 30, fontSize: 22, fontWeight: 700 }}>
-          Coshift <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>· two accounts, one project</span>
+          Coshift <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>(team board) · any number of accounts, one project</span>
         </div>
 
         <Card x={A_X} name="ATLAS" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />

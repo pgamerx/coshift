@@ -94,13 +94,13 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/":
-            with open(B.PAGE) as f:
+            with open(B.PAGE, encoding="utf-8") as f:
                 return self.send(200, f.read(), "text/html; charset=utf-8")
         who = self.who()
         if not who:
             return self.send(401, {"error": "missing or wrong token"})
         if path == "/api/hook":
-            with open(os.path.join(os.path.dirname(B.PAGE), "board-context.sh")) as f:
+            with open(os.path.join(os.path.dirname(B.PAGE), "board-context.sh"), encoding="utf-8") as f:
                 script = f.read()
             return self.send(200, HOOK_HELP + script, "text/plain; charset=utf-8")
         if path == "/api/help":

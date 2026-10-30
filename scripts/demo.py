@@ -61,7 +61,7 @@ demo = {
         "3 commits ahead of main.\nNEXT: finish address validation (#1), then the orders bug.\nGOTCHAS: the postcode API "
         "rate-limits at 10/s in staging."}]},
 }
-with open(os.path.join(home, "board.json"), "w") as f:
+with open(os.path.join(home, "board.json"), "w", encoding="utf-8") as f:
     json.dump(demo, f)
 
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 7788

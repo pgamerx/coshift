@@ -82,7 +82,7 @@ export const TypicalDay: React.FC = () => {
   const bottom = top + STEPS.length * row + 10;
   return (
     <AbsoluteFill style={{ background: C.bg, color: C.text, fontFamily: FONT }}>
-      <div style={{ position: "absolute", left: 40, top: 28, fontSize: 26, fontWeight: 800 }}>A typical day with two accounts</div>
+      <div style={{ position: "absolute", left: 40, top: 28, fontSize: 26, fontWeight: 800 }}>A typical day with several accounts</div>
       {LANES.map((name, i) => (
         <React.Fragment key={name}>
           <div style={{ position: "absolute", left: laneX(i) - 85, top: 74, width: 170, textAlign: "center", fontSize: 17,

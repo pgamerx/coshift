@@ -20,13 +20,13 @@ NAME_RE = r"[A-Z0-9_-]{1,20}"
 
 def write_private(path, text):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
 
 
 def read_json(path, default):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return default
@@ -200,7 +200,7 @@ def main():
     vercel("env", "pull", env_file, "--yes")
     kv = {}
     if os.path.exists(env_file):
-        with open(env_file) as f:
+        with open(env_file, encoding="utf-8") as f:
             kv = dict(re.findall(r'^(KV_REST_API_URL|KV_REST_API_TOKEN)="?([^"\n]*)"?', f.read(), re.M))
     if len(kv) < 2:
         sys.exit("No Upstash credentials in the Vercel project. Add it first: vercel integration add upstash/upstash-kv")
