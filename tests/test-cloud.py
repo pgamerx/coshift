@@ -74,10 +74,16 @@ check("hook stays quiet when context hasn't moved", r2.stdout.strip() == "", r2.
 r3 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], input=hook_in, capture_output=True,
                     text=True, env={k: v for k, v in env.items() if k != "COSHIFT_URL"})
 check("hook does nothing without board env vars", r3.returncode == 0 and r3.stdout == "")
+req = urllib.request.Request(f"{URL}/api/settings", data=json.dumps({"context_windows": {"ATLAS": 1000000}}).encode(),
+                             method="POST", headers={"Authorization": "Bearer tX", "Content-Type": "application/json"})
+urllib.request.urlopen(req).read()
 r4 = subprocess.run(["sh", os.path.join(ROOT, "board", "board-context.sh")], capture_output=True, text=True,
-                    input=hook_in.replace('"s1"', '"s1m"'), env=dict(env, COSHIFT_CONTEXT_WINDOW="1000000"))
+                    input=hook_in.replace('"s1"', '"s1m"'), env=env)
 s1m = next(x for x in json.loads(get("/api/board", "tX"))["sessions"] if x["id"] == "s1m")
-check("COSHIFT_CONTEXT_WINDOW=1000000: same tokens read 14%, no stop", r4.stdout == "" and s1m["context_pct"] == 14, s1m)
+check("ATLAS set to a 1M window on the board: same tokens read 14%, no stop", r4.stdout == "" and s1m["context_pct"] == 14, s1m)
+urllib.request.urlopen(urllib.request.Request(f"{URL}/api/settings", method="POST",
+    data=json.dumps({"context_windows": {"ATLAS": 200000}}).encode(),
+    headers={"Authorization": "Bearer tX", "Content-Type": "application/json"})).read()
 
 state = json.loads(get("/api/board", "tX"))
 sess = next(x for x in state["sessions"] if x["id"] == "s1")

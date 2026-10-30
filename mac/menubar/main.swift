@@ -196,11 +196,14 @@ let barMaxChars = 24
 func barText(_ name: String) -> String { name.count > barMaxChars ? String(name.prefix(barMaxChars - 1)) + "\u{2026}" : name }
 
 func barLabel(active: String?, switching: Bool, names: [String: NameEntry], showName: Bool = true,
-              accents: [String: String] = [:]) -> BarLabel {
+              accents: [String: String] = [:], coshiftOnly: Bool = false, limit: CoshiftAccount? = nil) -> BarLabel {
     if switching { return BarLabel(symbol: barSymbol, tint: "grey", text: "Switching") }
+    if coshiftOnly { return BarLabel(symbol: barSymbol, tint: "orange", text: showName ? "Coshift" : "") }
     guard let a = active else { return BarLabel(symbol: barSymbol, tint: "grey", text: showName ? "?" : "") }
+    // the active account's 5-hour and weekly usage, when known: "ATLAS  72% · 41%"
+    let pct = limit.map { a in "\(a.fiveHour.map { "\($0)%" } ?? "?") · \(a.weekly.map { "\($0)%" } ?? "?")" } ?? ""
     return BarLabel(symbol: barSymbol, tint: accents[a] ?? resolveAccents([a], names)[a] ?? "grey",
-                    text: showName ? barText(displayName(a, names)) : "")
+                    text: showName ? barText(displayName(a, names)) + (pct.isEmpty ? "" : "  " + pct) : pct)
 }
 
 /// Launch-at-login state, as reported by SMAppService (never touches profiles or claude-switch).
@@ -224,14 +227,71 @@ func setLaunchAtLogin(_ on: Bool) -> String? {
     } catch { return error.localizedDescription }
 }
 
+// MARK: - Coshift (board status from `board.py tray-json`; nil when Coshift isn't set up)
+
+struct CoshiftAccount { let name: String; let fiveHour: Int?; let weekly: Int?; let stop: String }
+struct CoshiftNeed { let id: Int; let title: String; let by: String; let question: String }
+struct CoshiftState { let accounts: [CoshiftAccount]; let needs: [CoshiftNeed] }
+
+func parseCoshift(_ text: String) -> CoshiftState? {
+    guard let d = text.data(using: .utf8),
+          let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+    let accts = (j["accounts"] as? [[String: Any]] ?? []).map {
+        CoshiftAccount(name: $0["name"] as? String ?? "?", fiveHour: $0["five_hour_pct"] as? Int,
+                       weekly: $0["weekly_pct"] as? Int, stop: $0["stop"] as? String ?? "")
+    }
+    let needs = (j["needs"] as? [[String: Any]] ?? []).map {
+        CoshiftNeed(id: $0["id"] as? Int ?? 0, title: $0["title"] as? String ?? "",
+                    by: $0["by"] as? String ?? "", question: $0["q"] as? String ?? "")
+    }
+    return CoshiftState(accounts: accts, needs: needs)
+}
+
+/// Coshift account whose name matches a desktop profile's display name (e.g. profile "main" shown as ATLAS).
+func coshiftAccount(_ c: CoshiftState?, for display: String) -> CoshiftAccount? {
+    c?.accounts.first { $0.name.caseInsensitiveCompare(display) == .orderedSame }
+}
+
+func limitsText(_ a: CoshiftAccount) -> String {
+    let pct = { (v: Int?) in v.map { "\($0)%" } ?? "?" }
+    return "5h \(pct(a.fiveHour)) · wk \(pct(a.weekly))" + (a.stop.isEmpty ? "" : " · stopped")
+}
+
+func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) -> [MenuItemSpec] {
+    guard let c = c else { return [spec("Open Coshift Board", "board", key: "b")] }
+    var m = [spec("Coshift", "none", enabled: false)]
+    for a in c.accounts where !shown.contains(a.name.uppercased()) {  // profiles above already show theirs
+        m.append(spec("\(a.name)   \(limitsText(a))", "run:\(a.name)", enabled: !switching))
+    }
+    if !c.needs.isEmpty {
+        let n = c.needs.count
+        m.append(spec("⚠︎ \(n) task\(n == 1 ? "" : "s") need\(n == 1 ? "s" : "") you: #\(c.needs[0].id) \(c.needs[0].title)", "board"))
+    }
+    m.append(spec("Start Claude Code (most limit left)", "run:", enabled: !switching, key: "n"))
+    m.append(spec("Open Coshift Board", "board", key: "b"))
+    return m
+}
+
 func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [String: NameEntry],
-               login: LoginState = .off, showName: Bool = true, sideBySide: Bool = false) -> [MenuItemSpec] {
+               login: LoginState = .off, showName: Bool = true, sideBySide: Bool = false,
+               coshift: CoshiftState? = nil) -> [MenuItemSpec] {
     var m: [MenuItemSpec] = []
     let sep = spec("-", "sep", enabled: false)
+    if profiles.isEmpty && coshift != nil {  // Coshift-only user: no desktop-app profiles to switch
+        m += coshiftItems(coshift, switching: switching)
+        m.append(sep)
+        m.append(spec(login == .needsApproval ? "Launch at Login (needs approval...)" : "Launch at Login", "login",
+                      enabled: login != .unavailable, checked: login == .on))
+        m.append(spec("Refresh", "refresh"))
+        m.append(sep)
+        m.append(spec("Quit", "quit", key: "q"))
+        return m
+    }
     if profiles.isEmpty { m.append(spec("No profiles found", "none", enabled: false)) }
     for p in profiles {
         let isActive = p.name == active
-        let t = displayText(p.name, names) + (p.incomplete ? " (incomplete)" : "")
+        let lim = coshiftAccount(coshift, for: displayName(p.name, names)).map { "   " + limitsText($0) } ?? ""
+        let t = displayText(p.name, names) + (p.incomplete ? " (incomplete)" : "") + lim
         // The active row is a no-op (never re-runs a switch); it is just enabled so it reads at full contrast.
         // Switching to a profile that's open side by side closes that instance first (claude-switch use does it).
         m.append(spec(t, isActive ? "noop" : "use:\(p.name)", enabled: !switching && !p.incomplete, checked: isActive))
@@ -239,9 +299,7 @@ func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [St
     m.append(sep)
     let others = profiles.filter { $0.name != active && !$0.incomplete }
     if let o = others.first {
-        // `toggle` is main <-> second; only offered when there is exactly one other profile.
-        let action = (profiles.count == 2 || others.count == 1) ? "toggle" : "use:\(o.name)"
-        m.append(spec("Switch to \(displayText(o.name, names))", action, enabled: !switching, key: "s"))
+        // Switching is the profile rows above; here only the side-by-side window.
         // Closing its window doesn't quit the second instance on macOS, so offer to close it here.
         m.append(sideBySide
                  ? spec("Close \(displayText(o.name, names)) Side by Side", "sbsclose:\(o.name)", enabled: !switching, key: "o")
@@ -249,8 +307,10 @@ func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [St
     } else {
         m.append(spec("No other profile", "none", enabled: false))
     }
-    m.append(spec("Open Coshift Board", "board", key: "b"))
     m.append(spec("Rename...", "rename", enabled: !switching && !profiles.isEmpty, key: "r"))
+    m.append(sep)
+    m += coshiftItems(coshift, switching: switching,
+                      shown: Set(profiles.map { displayName($0.name, names).uppercased() }))
     m.append(sep)
     m.append(spec(login == .needsApproval ? "Launch at Login (needs approval...)" : "Launch at Login", "login",
                   enabled: !switching && login != .unavailable, checked: login == .on))
@@ -286,6 +346,24 @@ func run(_ args: [String]) -> (code: Int32, out: String) {
     return (p.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
+let coshiftScript: String = ProcessInfo.processInfo.environment["COSHIFT_PY"] ?? (NSHomeDirectory() + "/.coshift/board.py")
+
+/// Board status for the menu, or nil when Coshift isn't set up on this Mac.
+func loadCoshift() -> CoshiftState? {
+    if let mock = ProcessInfo.processInfo.environment["MOCK_COSHIFT"] { return mock.isEmpty ? nil : parseCoshift(mock) }
+    guard FileManager.default.fileExists(atPath: coshiftScript) else { return nil }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    p.arguments = [coshiftScript, "tray-json"]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return p.terminationStatus == 0 ? parseCoshift(String(decoding: data, as: UTF8.self)) : nil
+}
+
 func notify(title: String, message: String) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -314,11 +392,13 @@ func printMenu() {
     for switching in [false, true] {
         print("== switching=\(switching) ==")
         let l = barLabel(active: active, switching: switching, names: loaded.entries,
-                         showName: loaded.settings.showName, accents: accents)
+                         showName: loaded.settings.showName, accents: accents,
+                         coshiftOnly: profiles.isEmpty && loadCoshift() != nil,
+                         limit: active.flatMap { coshiftAccount(loadCoshift(), for: displayName($0, loaded.entries)) })
         print("bar: [\(l.symbol), medium, tint=\(l.tint)]" + (l.text.isEmpty ? "  (sparkle only)" : " \"\(l.text)\""))
         for i in buildMenu(active: active, profiles: profiles, switching: switching, names: loaded.entries,
                            login: login, showName: loaded.settings.showName,
-                           sideBySide: parseSideBySide(status: status)) {
+                           sideBySide: parseSideBySide(status: status), coshift: loadCoshift()) {
             if i.action == "sep" { print("  ----"); continue }
             print("  [\(i.checked ? "x" : " ")] \(i.title)"
                   + (i.key.map { "    Cmd-\($0.uppercased())" } ?? "")
@@ -426,6 +506,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var settings = Settings()
     var switching = false          // only touched on the main thread
     var sideBySide = false         // a second window is open (from `claude-switch status`)
+    var coshift: CoshiftState?     // board status, refreshed with the rest
+    var seenNeeds: Set<Int>?       // questions already notified (nil until the first load, so old ones don't ping)
 
     func applicationDidFinishLaunching(_ n: Notification) {
         menu.delegate = self
@@ -446,6 +528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global().async {
             let s = run(["status"]), l = run(["list"])
             let n = loadNames()
+            let cs = loadCoshift()
             DispatchQueue.main.async {
                 if self.switching { return }
                 self.active = s.code == 0 ? parseActive(status: s.out) : nil
@@ -454,6 +537,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.names = n.entries
                 self.settings = n.settings
                 self.persistAccents(broken: n.broken)
+                self.coshift = cs
+                let ids = Set(cs?.needs.map { $0.id } ?? [])
+                if let seen = self.seenNeeds {
+                    for need in cs?.needs ?? [] where !seen.contains(need.id) {
+                        notify(title: "\(need.by) needs you on #\(need.id)", message: need.question)
+                    }
+                }
+                self.seenNeeds = ids
                 self.render()
             }
         }
@@ -478,7 +569,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func render() {
         let accents = resolveAccents(profiles.map { $0.name }, names)
         let label = barLabel(active: active, switching: switching, names: names,
-                             showName: settings.showName, accents: accents)
+                             showName: settings.showName, accents: accents,
+                             coshiftOnly: profiles.isEmpty && coshift != nil,
+                             limit: active.flatMap { coshiftAccount(coshift, for: displayName($0, names)) })
         if let b = item.button {
             b.image = barImage(symbol: label.symbol, tint: label.tint)
             b.imagePosition = label.text.isEmpty ? .imageOnly : .imageLeading
@@ -487,7 +580,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.removeAllItems()
         for spec in buildMenu(active: active, profiles: profiles, switching: switching, names: names,
-                              login: loginState(), showName: settings.showName, sideBySide: sideBySide) {
+                              login: loginState(), showName: settings.showName, sideBySide: sideBySide,
+                              coshift: coshift) {
             if spec.action == "sep" { menu.addItem(.separator()); continue }
             let mi = NSMenuItem(title: spec.title, action: #selector(clicked(_:)), keyEquivalent: spec.key ?? "")
             if spec.key != nil { mi.keyEquivalentModifierMask = .command }
@@ -517,10 +611,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if action.hasPrefix("sbs:") {
                 let name = String(action.dropFirst(4))
                 if validName(name) { startSwitch(["side-by-side", name]) }
+            } else if action.hasPrefix("run:") {
+                let name = String(action.dropFirst(4))
+                if name.isEmpty || validName(name) { startClaude(as: name) }
             } else if action.hasPrefix("sbsclose:") {
                 let name = String(action.dropFirst(9))
                 if validName(name) { startSwitch(["side-by-side-close", name]) }
             }
+        }
+    }
+
+    /// Opens Terminal running `coshift run [NAME]` (Claude Code as that account, or the one with most limit left).
+    func startClaude(as name: String) {
+        let cmd = name.isEmpty ? "coshift run" : "coshift run \(name)"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", "on run argv", "-e", "tell application \"Terminal\" to do script (item 1 of argv)",
+                       "-e", "tell application \"Terminal\" to activate", "-e", "end run", cmd]
+        do { try p.run() } catch {
+            notify(title: "Claude Switch Menu", message: "Could not open Terminal: \(error.localizedDescription)")
         }
     }
 
@@ -633,6 +742,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 func selfTest() -> Int32 {
     var fails = 0
     func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { fails += 1 } }
+    // Never test against the real settings: without an explicit file, use a throwaway one.
+    if ProcessInfo.processInfo.environment["CLAUDE_SWITCH_MENU_NAMES"] == nil {
+        let tmp = NSTemporaryDirectory() + "csm-selftest-\(getpid())/names.json"
+        setenv("CLAUDE_SWITCH_MENU_NAMES", tmp, 1)
+    }
     let path = namesFilePath()
     let taken = ["main": "Work", "second": "second"]
     func isErr(_ r: Result<String, NameError>) -> Bool { if case .failure = r { return true }; return false }
@@ -692,7 +806,9 @@ func renderPNG(to path: String) {
     var row = 0
     for switching in [false, true] {
         let l = barLabel(active: active, switching: switching, names: loaded.entries,
-                         showName: loaded.settings.showName, accents: accents)
+                         showName: loaded.settings.showName, accents: accents,
+                         coshiftOnly: reals.isEmpty && loadCoshift() != nil,
+                         limit: active.flatMap { coshiftAccount(loadCoshift(), for: displayName($0, loaded.entries)) })
         for (bg, fg) in backgrounds {
             let y = CGFloat(rows - 1 - row) * h
             bg.setFill(); NSRect(x: 0, y: y, width: w, height: h).fill()

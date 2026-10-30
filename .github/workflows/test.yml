@@ -1,31 +1,68 @@
 name: tests
 on: [push, pull_request]
+
 jobs:
   board:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: python3 tests/test-board.py
-      - run: python3 tests/test-cloud.py
+      - run: python tests/test-board.py
+      - run: python tests/test-features.py
+      - run: python tests/test-cloud.py
+      - name: Linux tray summary
+        if: runner.os == 'Linux'
+        run: python tray/coshift-tray-linux.py --once || true
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: install the packed npm package and smoke-test the command
+        shell: bash
+        env: { COSHIFT_HOME: "${{ runner.temp }}/coshift-home", COSHIFT_USAGE_APP: "" }
+        run: |
+          npm pack
+          npm install -g ./coshift-*.tgz
+          coshift --version
+          coshift help | grep -q "coshift setup"
+          coshift hook | grep -q PostToolUse
+          coshift call help | grep -q "several Claude accounts"
+          coshift config stop_5h 80 | grep -q "stop_5h = 80"
+          coshift config context_window 1000000 ATLAS | grep -q "1000000"
+          (coshift demo 7788 &) && sleep 4 && curl -sf http://127.0.0.1:7788/ | grep -q "team board"
+
+  windows-tray:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tray script parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\tray\coshift-tray.ps1", [ref]$null, [ref]$errs)
+          if ($errs.Count) { $errs; exit 1 }
+
   mac:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash mac/tests/test-sandbox.sh
-      - run: python3 tests/test-board.py
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - name: install the packed npm package and smoke-test the command
+      - name: menu bar app builds and passes its checks
         run: |
-          npm pack
-          npm install -g ./coshift-*.tgz
-          coshift --version
-          coshift hook | grep -q PostToolUse
-          coshift call help | grep -q "Shared task board"
-          (coshift demo 7788 &) && sleep 3 && curl -sf http://127.0.0.1:7788/ | grep -q Coshift
+          swiftc -O -o "$RUNNER_TEMP/csm" mac/menubar/main.swift
+          bash mac/menubar/mock-check.sh "$RUNNER_TEMP/csm"
+          "$RUNNER_TEMP/csm" --selftest

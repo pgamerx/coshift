@@ -13,7 +13,7 @@ import board as B  # noqa: E402
 TOKENS = json.loads(os.environ.get("COSHIFT_TOKENS") or "{}")
 LOCK = threading.Lock()  # board.py keeps the caller's identity in globals; one call at a time per instance
 
-HELP = """COSHIFT (cloud). Another Claude account works on this project in parallel; this board splits the
+HELP = """COSHIFT (cloud). Other Claude accounts work on this project in parallel; this board splits the
 work between you so you never do the same task, and hands work over when one of you nears its limit.
 
 Call it with curl (COSHIFT_URL and COSHIFT_TOKEN are set in your environment). Define once per shell:
@@ -29,7 +29,7 @@ Protocol:
    current small step, release_task with a full handover, and stop.
 2. board_status, then claim_task (next open task, or {"id": N}). Work only on tasks you have claimed.
 3. While working, add_note with short progress notes (done so far, next step, files, branch) so the
-   other account can continue if you stop. Push your branch often so the other account can see it.
+   next account can continue if you stop. Push your branch often so the others can see it.
 4. When done: complete_task {"id": N, "text": "summary"}, then claim the next task.
 5. Near the limit: release_task {"id": N, "text": "full handover: done, left, exact next step, files, branch"}.
 6. Split big goals into independent tasks with add_task {"title": "...", "detail": "files/area + what done
@@ -40,6 +40,12 @@ CONTEXT: a hook reports how full your context window is. At """ + str(B.STOP_CON
    branch/commits, claimed task + exact next step, open questions, gotchas, key files) and give the user
    the two-line restart prompt it returns, in a code block. Then stop. Don't wait for auto-compaction.
    No hook yet in this repo? Install it: see GET $COSHIFT_URL/api/hook.
+FILES AND ORDER: when you add tasks, pass "files" (paths/globs each task edits) and "depends_on" (ids that
+   must finish first). claim_task never hands you a task whose files another running task is editing or whose
+   dependencies aren't done. Edit only your task's files.
+ASK, DON'T STALL: blocked on a decision only the user can make? ask_user {"id": N, "question": "..."}, then keep
+   working on something else; the answer arrives as MESSAGE FROM THE USER.
+PORTS: before starting a dev server or database, lease_port and use the ports it gives you.
 7. GUIDANCE FROM THE USER (in board_status / claim_task) are standing rules: always follow them.
    MESSAGE FROM THE USER (appended to any result) is a direct instruction from the user: follow it.
 Check the board at least after every task.

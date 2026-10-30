@@ -12,7 +12,25 @@ number of sessions from either account can read and write it safely.
 No network calls, no credentials: each session reports its own plan usage, which
 Claude reads with the desktop app's get_usage tool.
 """
-import fcntl, json, os, plistlib, socket, subprocess, sys, tempfile, time, urllib.request, uuid
+import json, os, plistlib, re, socket, subprocess, sys, tempfile, time, urllib.request, uuid, webbrowser
+from fnmatch import fnmatch
+
+try:  # exclusive lock on the local board file: fcntl on macOS/Linux, msvcrt on Windows
+    import fcntl
+
+    def _lock(f):
+        fcntl.flock(f, fcntl.LOCK_EX)
+except ImportError:
+    import msvcrt
+
+    def _lock(f):
+        f.seek(0)
+        while True:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -23,7 +41,9 @@ STOP_5H = int(os.environ.get("COSHIFT_STOP_5H", "85"))      # % of the 5-hour li
 STOP_WEEK = int(os.environ.get("COSHIFT_STOP_WEEK", "90"))  # % of the weekly limit
 PORT = int(os.environ.get("COSHIFT_PORT", "7777"))
 SWITCH = os.environ.get("CLAUDE_SWITCH_BIN", os.path.expanduser("~/bin/claude-switch"))
-LIVE = os.environ.get("CLAUDE_SWITCH_LIVE", os.path.expanduser("~/Library/Application Support/Claude"))
+_APP_DIR = {"darwin": "~/Library/Application Support/Claude", "win32": os.path.join(os.environ.get("APPDATA", "~"), "Claude")}
+LIVE = os.environ.get("CLAUDE_SWITCH_LIVE",
+                      os.path.expanduser(_APP_DIR.get(sys.platform, "~/.config/Claude")))  # the Claude desktop app's data
 PROFILES = os.environ.get("CLAUDE_SWITCH_HOME", os.path.expanduser("~/ClaudeProfiles"))
 NAMES = os.environ.get("CLAUDE_SWITCH_MENU_NAMES",
                        os.path.expanduser("~/Library/Application Support/ClaudeSwitchMenu/names.json"))
@@ -51,6 +71,16 @@ STOP_CONTEXT = int(os.environ.get("COSHIFT_STOP_CONTEXT", "70"))  # % of the ses
 FRESH_MIN = 20     # a usage report older than this must be refreshed before claiming
 STALE_CLAIM_MIN = 45  # a claimed task untouched this long can be taken over
 
+# Settings live on the board itself (changed from the page or `coshift config`), so they take effect at
+# once everywhere without a redeploy. Env vars only set the defaults.
+DEFAULTS = {"stop_5h": STOP_5H, "stop_week": STOP_WEEK, "stop_context": STOP_CONTEXT, "stale_min": STALE_CLAIM_MIN,
+            "fresh_min": FRESH_MIN, "ntfy_topic": os.environ.get("COSHIFT_NTFY_TOPIC", ""),
+            "port_base": 4100, "port_block": 10,
+            "context_window": int(os.environ.get("COSHIFT_CONTEXT_WINDOW") or 200000)}
+SETTING_RANGES = {"stop_5h": (1, 100), "stop_week": (1, 100), "stop_context": (5, 100), "stale_min": (5, 1440),
+                  "fresh_min": (1, 1440), "port_base": (1024, 60000), "port_block": (2, 1000),
+                  "context_window": (50000, 2000000)}
+
 ORG = os.environ.get("CLAUDE_CODE_ORGANIZATION_UUID", "")
 ME = (os.environ.get("COSHIFT_AS") or os.environ.get("CLAUDE_CODE_USER_EMAIL")
       or os.environ.get("CLAUDE_CODE_ACCOUNT_UUID") or "")
@@ -59,22 +89,22 @@ if REMOTE.get("accounts", {}).get(ORG):
 SID = os.environ.get("CLAUDE_CODE_SESSION_ID") or f"pid{os.getpid()}"
 CWD = os.getcwd()
 
-INSTRUCTIONS = f"""Shared task board for two Claude accounts working on the same project in parallel.
-You are one of them; the other account works in a second window. Follow this protocol:
+INSTRUCTIONS = f"""Shared task board for several Claude accounts (two or more) working on the same project in parallel.
+You are one of them; the others work in their own sessions. Follow this protocol:
 1. Before starting work and after finishing each task, call get_usage (desktop app tool) and pass the
    plan numbers to report_usage. Claiming needs a report from the last {FRESH_MIN} minutes.
 2. Call board_status, then claim_task to take the next open task (or a specific id). Work only on
-   tasks you have claimed, so the two accounts never do the same thing.
+   tasks you have claimed, so no two sessions ever do the same thing.
 3. While working, call add_note with short progress notes (what's done, what's next, files touched),
-   so the other account can continue if you stop.
+   so another account can continue if you stop.
 4. When done: complete_task with a summary, report usage again, then claim the next task.
 5. If your 5-hour usage reaches {STOP_5H}% or weekly reaches {STOP_WEEK}% (report_usage will say so),
    finish the current small step, then release_task with a full handover (what's done, what's left,
-   exact next step, files, branch) and stop. The other account picks it up.
-6. Split big requests from the user into tasks with add_task so both accounts have work.
+   exact next step, files, branch) and stop. Another account picks it up.
+6. Split big requests from the user into tasks with add_task so every account has work.
 7. Tool results may end with MESSAGE FROM THE USER: those come from the user's board page. Follow them.
 8. board_status and claim_task show GUIDANCE FROM THE USER: standing rules the user wrote for this
-   project (for both accounts or just you). They always apply, like instructions from the user.
+   project (for every account or just you). They always apply, like instructions from the user.
 9. Already have your own task list from before? Put it on the board: add_task each item (pass
    done_summary for items already finished), then claim the one you're working on.
 10. Context: call get_usage and pass its context percent to report_context after each task. At {STOP_CONTEXT}%
@@ -84,7 +114,12 @@ You are one of them; the other account works in a second window. Follow this pro
      Start with board resume and continue from your saved context.
    (desktop sessions with the board tools: just call resume).
 11. A new session starts with resume: it returns your account's saved context summary and your tasks.
-Work on your own git branch or worktree; never commit to the other account's branch."""
+12. When you add tasks, pass files (the paths each will edit) and depends_on (ids that must finish first).
+   claim_task never gives you a task whose files another running task is editing, or whose dependencies
+   aren't done. Edit only the files of the task you own.
+13. Blocked on a decision only the user can make? ask_user, then keep going on something else.
+14. Before starting a dev server or database, lease_port and use the ports it gives you.
+Work on your own git branch or worktree; never commit to another account's branch."""
 
 
 def now():
@@ -140,11 +175,12 @@ def board(write=False):
     """Yields the board dict under an exclusive lock; saves atomically if write=True."""
     if REDIS_URL:
         with _redis_board(write) as b:
+            _apply_settings(b)
             yield b
         return
     os.makedirs(HOME, mode=0o700, exist_ok=True)
-    with open(LOCK, "a") as lk:
-        fcntl.flock(lk, fcntl.LOCK_EX)
+    with open(LOCK, "a+") as lk:
+        _lock(lk)
         try:
             with open(BOARD) as f:
                 b = json.load(f)
@@ -153,12 +189,116 @@ def board(write=False):
         b.setdefault("sessions", {})
         b.setdefault("messages", [])
         b.setdefault("guidance", [])
+        _apply_settings(b)
         yield b
         if write:
             fd, tmp = tempfile.mkstemp(dir=HOME, prefix=".board.")
             with os.fdopen(fd, "w") as f:
                 json.dump(b, f, indent=1)
             os.replace(tmp, BOARD)
+
+
+def settings_of(b):
+    return {**DEFAULTS, **{k: v for k, v in b.get("settings", {}).items() if k in DEFAULTS}}
+
+
+def _apply_settings(b):
+    global STOP_5H, STOP_WEEK, STOP_CONTEXT, STALE_CLAIM_MIN, FRESH_MIN
+    s = settings_of(b)
+    STOP_5H, STOP_WEEK, STOP_CONTEXT = s["stop_5h"], s["stop_week"], s["stop_context"]
+    STALE_CLAIM_MIN, FRESH_MIN = s["stale_min"], s["fresh_min"]
+
+
+def window_for(b, account):
+    """Context window (tokens) of an account's sessions: its own setting, else the board-wide one."""
+    return b.get("settings", {}).get("context_windows", {}).get(account) or settings_of(b)["context_window"]
+
+
+def last_seen(b, t):
+    """When the task's owner was last active: a task update, or its session reporting in (the hook, any tool)."""
+    return max(t.get("updated", 0), b["sessions"].get(t.get("session") or "", {}).get("last", 0))
+
+
+def set_setting(b, key, value, account=None):
+    """Validates and stores one setting on the board (context_window can be per account). Returns the value."""
+    if key not in DEFAULTS:
+        raise ValueError(f"unknown setting {key}. Settings: {', '.join(DEFAULTS)}")
+    if key == "ntfy_topic":
+        value = str(value or "").strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", value):
+            raise ValueError("ntfy_topic: 4-64 letters, digits, - or _ (or empty to turn notifications off)")
+    else:
+        lo, hi = SETTING_RANGES[key]
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a whole number")
+        if not lo <= value <= hi:
+            raise ValueError(f"{key} must be between {lo} and {hi}")
+    if account and key == "context_window":
+        b.setdefault("settings", {}).setdefault("context_windows", {})[account.upper()] = value
+    elif account:
+        raise ValueError("only context_window can be set per account")
+    else:
+        b.setdefault("settings", {})[key] = value
+    _apply_settings(b)
+    return value
+
+
+def notify_phone(topic, title, text):
+    """Optional push notification through ntfy.sh (the user subscribes to their topic in the ntfy app)."""
+    if not topic:
+        return
+    try:
+        req = urllib.request.Request(f"https://ntfy.sh/{topic}", data=text.encode()[:3000], method="POST",
+                                     headers={"Title": title[:200], "Tags": "baton"})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass  # a notification must never break the board
+
+
+def _paths(v):
+    if isinstance(v, str):
+        v = v.split(",")
+    out = [str(p).strip().strip("/") for p in (v or [])]
+    return [p for p in out if p and p not in (".", "*", "**")] if out else []
+
+
+def paths_overlap(xs, ys):
+    """First overlapping pair of path patterns (same path, one inside the other, or a glob match), else None."""
+    for x in xs:
+        for y in ys:
+            if x == y or x.startswith(y + "/") or y.startswith(x + "/") or fnmatch(x, y) or fnmatch(y, x):
+                return x, y
+    return None
+
+
+def blockers(b, t):
+    """Why task t can't start now: unfinished dependencies, or files another running task owns."""
+    out = []
+    for d in t.get("depends_on", []):
+        dt = next((x for x in b["tasks"] if x["id"] == d), None)
+        if dt and dt["status"] not in ("done", "cancelled"):
+            out.append(f"waits for #{d} ({dt['status']})")
+    for o in b["tasks"]:
+        if o["id"] != t["id"] and o["status"] == "claimed":
+            hit = paths_overlap(t.get("files", []), o.get("files", []))
+            if hit:
+                out.append(f"#{o['id']} ({o['owner']}) is editing {hit[1]}")
+    return out
+
+
+def _deps(b, v, self_id=None):
+    if isinstance(v, str):
+        v = [x for x in re.split(r"[,\s#]+", v) if x]
+    ids = []
+    for x in v or []:
+        i = int(x)
+        if i == self_id:
+            raise ValueError("a task can't depend on itself")
+        find(b, i)  # must exist
+        ids.append(i)
+    return ids
 
 
 def find(b, tid):
@@ -205,6 +345,12 @@ def render(b, me=""):
         for t in ts:
             who = f" [{t['owner']}, updated {ago(t['updated'])}]" if st == "claimed" else ""
             out.append(f"  #{t['id']} {t['title']}{who}")
+            if t.get("files") and st != "done":
+                out.append(f"      files: {', '.join(t['files'])}")
+            if st == "open" and blockers(b, t):
+                out.append(f"      blocked: {'; '.join(blockers(b, t))}")
+            if t.get("needs_input"):
+                out.append(f"      WAITING FOR THE USER: {t['needs_input']['q']}")
             if st != "done" and t.get("notes"):
                 n = t["notes"][-1]
                 out.append(f"      last note ({n['by']}, {ago(n['t'])}): {n['text']}")
@@ -279,7 +425,8 @@ def t_add_task(a):
     me = need_me()
     with board(write=True) as b:
         t = {"id": b["next_id"], "title": a["title"].strip(), "detail": a.get("detail", "").strip(),
-             "status": "open", "owner": "", "created_by": me, "updated": now(), "notes": []}
+             "status": "open", "owner": "", "created_by": me, "updated": now(), "notes": [],
+             "files": _paths(a.get("files")), "depends_on": _deps(b, a.get("depends_on"))}
         b["next_id"] += 1
         if a.get("done_summary", "").strip():
             t["status"], t["owner"] = "done", me
@@ -304,7 +451,7 @@ def t_claim_task(a):
                     "may be off). Keep tasks small and leave notes often.\n\n")
         flag = over_limit(u) if u else ""
         if flag:
-            raise ValueError(f"you're at your limit ({flag}). Don't claim new work; the other account will.")
+            raise ValueError(f"you're at your limit ({flag}). Don't claim new work; another account will.")
         mine = [t for t in b["tasks"] if t["status"] == "claimed" and t["owner"] == me]
         ctx = b["sessions"].get(SID, {}).get("context_pct", 0)
         if ctx >= STOP_CONTEXT and not (mine and a.get("id") in (None, mine[0]["id"])):
@@ -315,14 +462,23 @@ def t_claim_task(a):
         elif mine:
             t = mine[0]  # resume your own unfinished task first
         else:
-            t = next((t for t in b["tasks"] if t["status"] == "open"), None)
+            opens = [t for t in b["tasks"] if t["status"] == "open"]
+            t = next((t for t in opens if not blockers(b, t)), None)
             if not t:
+                if opens:
+                    return ("Every open task is blocked right now:\n" + "\n".join(
+                        f"  #{o['id']} {o['title']}: {'; '.join(blockers(b, o))}" for o in opens)
+                        + "\nWait, or ask the user what to do next.")
                 return "No open tasks. Ask the user what's next, or split the current goal with add_task."
+        if not (t["status"] == "claimed" and t["owner"] == me):
+            br = blockers(b, t)
+            if br:
+                raise ValueError(f"task #{t['id']} can't start yet: {'; '.join(br)}.")
         if t["status"] in ("done", "cancelled"):
             raise ValueError(f"task #{t['id']} is {t['status']}.")
         if t["status"] == "claimed" and t["owner"] != me:
             owner_u = b["usage"].get(t["owner"])
-            stale = now() - t["updated"] > STALE_CLAIM_MIN * 60
+            stale = now() - last_seen(b, t) > STALE_CLAIM_MIN * 60  # owner's session gone quiet, not just the task
             if not (over_limit(owner_u) or stale):
                 raise ValueError(f"task #{t['id']} is claimed by {t['owner']} (active {ago(t['updated'])}). "
                                  "Pick another one.")
@@ -331,7 +487,8 @@ def t_claim_task(a):
         t["updated"] = now()
         notes = "\n".join(f"  - {n['by']} ({iso(n['t'])}): {n['text']}" for n in t.get("notes", []))
         guide = guidance_text(b, me)
-    return warn + guide + (f"You own task #{t['id']}: {t['title']}\n{t['detail']}\n"
+        files = f"Files you own for this task (edit only these): {', '.join(t['files'])}\n" if t.get("files") else ""
+    return warn + guide + (f"You own task #{t['id']}: {t['title']}\n{t['detail']}\n" + files
             + (f"Notes / handover so far:\n{notes}" if notes else "No notes yet."))
 
 
@@ -350,6 +507,7 @@ def _finish(a, status, label):
         if t["status"] != "claimed" or t["owner"] != me:
             raise ValueError(f"task #{t['id']} isn't claimed by you (status {t['status']}, owner {t['owner'] or 'none'}).")
         note(t, me, f"{label}: {a['text'].strip()}")
+        t.pop("needs_input", None)
         t["status"] = status
         if status == "open":
             t["owner"] = ""
@@ -364,13 +522,70 @@ def t_release_task(a):
     return _finish(a, "open", "HANDOVER")
 
 
+def t_update_task(a):
+    me = need_me()
+    with board(write=True) as b:
+        t = find(b, int(a["id"]))
+        changed = []
+        for k in ("title", "detail"):
+            if a.get(k, "").strip():
+                t[k] = a[k].strip()
+                changed.append(k)
+        if "files" in a:
+            t["files"] = _paths(a["files"])
+            changed.append("files")
+        if "depends_on" in a:
+            t["depends_on"] = _deps(b, a["depends_on"], t["id"])
+            changed.append("depends_on")
+        if not changed:
+            raise ValueError("nothing to change: pass title, detail, files or depends_on")
+        note(t, me, f"updated {', '.join(changed)}")
+    return f"Task #{t['id']} updated ({', '.join(changed)})."
+
+
+def t_ask_user(a):
+    me = need_me()
+    q = a["question"].strip()
+    if not q:
+        raise ValueError("question is empty")
+    with board(write=True) as b:
+        t = find(b, int(a["id"]))
+        t["needs_input"] = {"q": q, "t": now(), "by": me}
+        note(t, me, f"QUESTION for the user: {q}")
+        topic = settings_of(b)["ntfy_topic"]
+    notify_phone(topic, f"{me} needs you on #{t['id']}", q)
+    return ("Asked. The user sees it highlighted on the board (and on their phone if notifications are on). "
+            "Their answer arrives as MESSAGE FROM THE USER on a later board call. Meanwhile do any part that "
+            "doesn't depend on the answer, or claim another unblocked task.")
+
+
+def t_lease_port(a):
+    need_me()
+    with board(write=True) as b:
+        s, leases = settings_of(b), b.setdefault("leases", {})
+        for sid in [k for k in leases if now() - b["sessions"].get(k, {}).get("last", 0) > 24 * 3600]:
+            if sid != SID:
+                del leases[sid]  # free ranges of sessions gone for a day
+        if SID not in leases:
+            used, n = set(leases.values()), 0
+            while s["port_base"] + n * s["port_block"] in used:
+                n += 1
+            leases[SID] = s["port_base"] + n * s["port_block"]
+        base, size = leases[SID], s["port_block"]
+    return (f"Ports {base}-{base + size - 1} are yours for this session. Use {base} for the dev server and the next "
+            f"ones for databases or other services (e.g. PORT={base}). Other sessions get different ranges, so "
+            "your servers won't collide.")
+
+
 RESTART_PROMPT = ('Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN" and follow it.\n'
                   'Start with board resume and continue from your saved context.')
 
 
 def t_report_context(a):
-    me, pct = need_me(), int(a["pct"])
+    me, pct = need_me(), int(a.get("pct") or 0)
     with board(write=True) as b:
+        if a.get("tokens"):  # the hook sends raw tokens; the board knows each account's window
+            pct = min(100, int(a["tokens"]) * 100 // window_for(b, me))
         b["sessions"].setdefault(SID, {}).update(account=me, context_pct=pct, context_tokens=int(a.get("tokens") or 0),
                                                  context_at=now())
     if pct >= STOP_CONTEXT:
@@ -411,7 +626,7 @@ def t_resume(a):
 
 
 TOOLS = {
-    "board_status": (t_board_status, "Show both accounts' reported usage and every task (claimed, open, recent done).", {}, []),
+    "board_status": (t_board_status, "Show every account's usage and every task (claimed, open, recent done).", {}, []),
     "report_usage": (t_report_usage, "Record this account's plan usage. Get the numbers from the get_usage tool "
                      "(5-hour limit and 'Weekly · all models'). Says STOP when you're near the limit.",
                      {"five_hour_pct": {"type": "integer"}, "weekly_pct": {"type": "integer"},
@@ -421,6 +636,11 @@ TOOLS = {
     "add_task": (t_add_task, "Add a task to the shared board. Make each task independent and specific "
                  "(goal, files/area, what done looks like). Pass done_summary to record work you already finished.",
                  {"title": {"type": "string"}, "detail": {"type": "string"},
+                  "files": {"type": "array", "items": {"type": "string"},
+                            "description": "paths or globs this task will edit, e.g. src/auth/ or *.css; no other "
+                                           "running task may touch them"},
+                  "depends_on": {"type": "array", "items": {"type": "integer"},
+                                 "description": "task ids that must be done first"},
                   "done_summary": {"type": "string", "description": "only for a task that's already finished"}},
                  ["title"]),
     "claim_task": (t_claim_task, "Take a task: your own unfinished one first, else the next open one, or a given id. "
@@ -431,15 +651,24 @@ TOOLS = {
     "complete_task": (t_complete_task, "Mark your claimed task done with a short summary of what changed.",
                       {"id": {"type": "integer"}, "text": {"type": "string"}}, ["id", "text"]),
     "release_task": (t_release_task, "Give your claimed task back with a full handover (done, left, exact next step, "
-                     "files, branch) so the other account can continue. Use when you're near your limit.",
+                     "files, branch) so another account can continue. Use when you're near your limit.",
                      {"id": {"type": "integer"}, "text": {"type": "string"}}, ["id", "text"]),
     "report_context": (t_report_context, "Record how full this session's context window is (percent). The cloud hook "
                        "does this automatically; desktop sessions pass get_usage's context percent. Says CONTEXT LIMIT "
-                       f"at {STOP_CONTEXT}%.", {"pct": {"type": "integer"}, "tokens": {"type": "integer"}}, ["pct"]),
+                       f"at {STOP_CONTEXT}%.", {"pct": {"type": "integer"}, "tokens": {"type": "integer"}}, []),
     "save_context": (t_save_context, "Save a full context summary for this account's next session (instead of "
                      "compacting): goal, decisions, current state, branch/commits, claimed task and exact next step, "
                      "open questions, gotchas, key files. The next session gets it from resume.",
                      {"text": {"type": "string"}}, ["text"]),
+    "update_task": (t_update_task, "Change a task's title, detail, files (paths it owns) or depends_on.",
+                    {"id": {"type": "integer"}, "title": {"type": "string"}, "detail": {"type": "string"},
+                     "files": {"type": "array", "items": {"type": "string"}},
+                     "depends_on": {"type": "array", "items": {"type": "integer"}}}, ["id"]),
+    "ask_user": (t_ask_user, "Flag that you need the user's decision on a task. It's highlighted on their board "
+                 "(and pushed to their phone if set up); the answer comes back as MESSAGE FROM THE USER.",
+                 {"id": {"type": "integer"}, "question": {"type": "string"}}, ["id", "question"]),
+    "lease_port": (t_lease_port, "Get a port range for this session's dev servers and databases, so parallel "
+                   "sessions never fight over the same port.", {}, []),
     "resume": (t_resume, "Start of a new session: returns this account's last saved context summary, your claimed "
                "tasks with notes, guidance, and the board.", {}, []),
 }
@@ -510,7 +739,7 @@ def second_window_open():
 
 def app_usage():
     """Latest usage sample the desktop app itself saved for each profile (plan-usage-history.json),
-    keyed by org id, so the page shows both accounts before any session reports."""
+    keyed by org id, so the page shows every account before any session reports."""
     try:
         with open(os.path.join(PROFILES, ".active")) as f:
             active = f.read().strip() or "active"
@@ -604,9 +833,12 @@ def web_state():
                                           if t["status"] == "claimed" and t.get("session") == k), "")}
                            for k, v in b["sessions"].items() if now() - v["last"] < 3 * 3600),
                           key=lambda x: x["last"], reverse=True)
+        tasks = [dict(t, stale=t["status"] == "claimed" and now() - last_seen(b, t) > STALE_CLAIM_MIN * 60,
+                      blocked=blockers(b, t) if t["status"] == "open" else []) for t in b["tasks"]]
         return {"stop_5h": STOP_5H, "stop_week": STOP_WEEK, "usage": usage, "accounts": accounts_view(b["usage"]),
                 "sessions": sessions,
-                "tasks": b["tasks"], "messages": b["messages"][-20:],
+                "settings": dict(settings_of(b), context_windows=b.get("settings", {}).get("context_windows", {})),
+                "tasks": tasks, "messages": b["messages"][-20:],
                 "guidance": [g for g in b["guidance"] if g["active"]], "second_window": second_window_open(),
                 "stop_context": STOP_CONTEXT,
                 "contexts": {k: v[-1] for k, v in b.get("contexts", {}).items() if v}}
@@ -646,6 +878,12 @@ def web_post(path, a):
                 raise ValueError("no such guidance")
             g["active"] = False  # kept in the file, just no longer shown to sessions
         return "Guidance removed."
+    if path == "/api/settings":
+        with board(write=True) as b:
+            wins = a.pop("context_windows", {}) or {}
+            done = {k: set_setting(b, k, v) for k, v in a.items()}
+            done.update({f"context_window[{acct}]": set_setting(b, "context_window", v, acct) for acct, v in wins.items()})
+        return "Saved: " + ", ".join(f"{k} = {v}" for k, v in done.items()) if done else "Nothing to change."
     if path == "/api/open-second":
         r = subprocess.run([SWITCH, "side-by-side"], capture_output=True, text=True, timeout=60)
         if r.returncode:
@@ -665,6 +903,16 @@ def web_post(path, a):
             elif parts[3] == "cancel":
                 t["status"], t["owner"] = "cancelled", ""
                 note(t, "you", "cancelled by user")
+            elif parts[3] == "answer":
+                ans = a.get("text", "").strip()
+                if not ans:
+                    raise ValueError("answer is empty")
+                q = (t.get("needs_input") or {}).get("q", "")
+                b["messages"].append({"t": now(), "to": t["owner"] or "all", "read_by": [],
+                                      "text": f"Answer to your question on task #{t['id']}"
+                                              + (f' ("{q}")' if q else "") + f": {ans}"})
+                note(t, "you", f"answer: {ans}")
+                t.pop("needs_input", None)
             else:
                 raise ValueError("unknown action")
         return f"Task #{t['id']} updated."
@@ -697,6 +945,7 @@ def web(port):
         def do_GET(self):
             if not self.trusted():
                 return self.send(403, {"error": "forbidden"})
+            self.path = self.path.split("?")[0]  # e.g. /?theme=light
             if self.path == "/":
                 with open(PAGE) as f:
                     return self.send(200, f.read(), "text/html; charset=utf-8")
@@ -705,6 +954,7 @@ def web(port):
             self.send(404, {"error": "not found"})
 
         def do_POST(self):
+            self.path = self.path.split("?")[0]
             if not self.trusted() or not self.headers.get("Content-Type", "").startswith("application/json"):
                 return self.send(403, {"error": "forbidden"})
             try:
@@ -726,7 +976,7 @@ def web_running(port):
 def web_open(port):
     """Opens the hosted board if remote.json names one; otherwise starts the local page if needed and opens it."""
     if REMOTE.get("url"):
-        return subprocess.run(["/usr/bin/open", REMOTE["url"]])
+        return webbrowser.open(REMOTE["url"])
     if not web_running(port):
         os.makedirs(HOME, mode=0o700, exist_ok=True)
         with open(os.path.join(HOME, "web.log"), "a") as log:
@@ -736,11 +986,11 @@ def web_open(port):
             if web_running(port):
                 break
             time.sleep(0.1)
-    subprocess.run(["/usr/bin/open", f"http://127.0.0.1:{port}/"])
+    webbrowser.open(f"http://127.0.0.1:{port}/")
 
 
 def push_usage():
-    """Copies both accounts' live usage (Claude Usage app / desktop app) into the shared board,
+    """Copies every account's live usage (Claude Usage app / desktop app) into the shared board,
     under the account names from remote.json. Run every minute by a LaunchAgent on the Mac."""
     names = REMOTE.get("accounts", {})
     live = {names[org]: u for org, u in outside_usage().items() if org in names}
@@ -754,6 +1004,42 @@ def push_usage():
                 b["usage"][name] = {k: u[k] for k in ("five_hour_pct", "weekly_pct", "five_hour_resets",
                                                       "weekly_resets", "at")} | {"org": next(o for o, n in names.items() if n == name)}
     print("pushed: " + ", ".join(f"{n} {u['five_hour_pct']}%/{u['weekly_pct']}%" for n, u in live.items()))
+    return 0
+
+
+def tray_accounts(b):
+    """Board usage, plus live numbers from this computer (Claude Usage app / Claude desktop app) for accounts the
+    board doesn't know yet, labelled with their menu bar display names. Newest wins."""
+    acc = {k.upper(): dict(v, name=k) for k, v in b["usage"].items()}
+    for u in outside_usage().values():
+        name = (u.get("profile") or "").upper()
+        if name and (name not in acc or u["at"] > acc[name]["at"]):
+            acc[name] = dict(u, name=name)
+    return [{"name": v["name"], "five_hour_pct": v.get("five_hour_pct"), "weekly_pct": v.get("weekly_pct"),
+             "age_min": int((now() - v["at"]) // 60), "stop": over_limit(v)} for _, v in sorted(acc.items())]
+
+
+def ingest_statusline(d):
+    """One Claude Code status-line update (its documented JSON) for account COSHIFT_AS: plan usage, the session's
+    context, and the account's real context window size. Works the same on Windows, macOS and Linux."""
+    me = (os.environ.get("COSHIFT_AS") or "").upper()
+    if not me:
+        return 0
+    rl, cw = d.get("rate_limits") or {}, d.get("context_window") or {}
+    fh, sd = rl.get("five_hour") or {}, rl.get("seven_day") or {}
+    sid = d.get("session_id") or SID
+    with board(write=True) as b:
+        if fh or sd:
+            b["usage"][me] = {"five_hour_pct": round(fh.get("used_percentage") or 0),
+                              "weekly_pct": round(sd.get("used_percentage") or 0),
+                              "five_hour_resets": resets_in(fh["resets_at"]) if fh.get("resets_at") else "",
+                              "weekly_resets": resets_in(sd["resets_at"]) if sd.get("resets_at") else "",
+                              "at": now(), "source": "statusline"}
+        if cw.get("context_window_size"):
+            b.setdefault("settings", {}).setdefault("context_windows", {})[me] = int(cw["context_window_size"])
+        if cw.get("used_percentage") is not None:
+            b["sessions"].setdefault(sid, {}).update(account=me, cwd=(d.get("workspace") or {}).get("current_dir") or CWD,
+                                                     last=now(), context_pct=round(cw["used_percentage"]), context_at=now())
     return 0
 
 
@@ -786,6 +1072,37 @@ def cli(argv):
             print(render(b))
     elif cmd == "add" and len(argv) >= 2:
         print(t_add_task({"title": argv[1], "detail": argv[2] if len(argv) > 2 else ""}))
+    elif cmd == "settings":
+        with board(write=len(argv) > 1) as b:
+            if len(argv) in (4, 5) and argv[1] == "set":
+                acct = argv[4] if len(argv) == 5 else None
+                print(f"{argv[2]}{f'[{acct.upper()}]' if acct else ''} = {set_setting(b, argv[2], argv[3], acct)}")
+            elif len(argv) == 1:
+                print(json.dumps(dict(settings_of(b), context_windows=b.get("settings", {}).get("context_windows", {}))))
+            else:
+                print("usage: board.py settings [set <key> <value>]")
+                return 1
+    elif cmd == "usage-json":
+        with board() as b:
+            print(json.dumps({"usage": b["usage"], "settings": settings_of(b),
+                              "windows": b.get("settings", {}).get("context_windows", {})}))
+    elif cmd == "tray-json":
+        # everything a tray/menu bar shows, in one small JSON
+        with board() as b:
+            st = settings_of(b)
+            print(json.dumps({
+                "url": REMOTE.get("url") or f"http://127.0.0.1:{PORT}/",
+                "accounts": tray_accounts(b),
+                "needs": [{"id": t["id"], "title": t["title"], "by": t["needs_input"]["by"], "q": t["needs_input"]["q"]}
+                          for t in b["tasks"] if t.get("needs_input")],
+                "claimed": sum(t["status"] == "claimed" for t in b["tasks"]),
+                "open": sum(t["status"] == "open" for t in b["tasks"]),
+                "stop_5h": st["stop_5h"], "stop_week": st["stop_week"]}))
+    elif cmd == "ingest-statusline":
+        return ingest_statusline(json.load(sys.stdin))
+    elif cmd == "detect-accounts":
+        print(json.dumps({org: {k: u[k] for k in ("profile", "five_hour_pct", "weekly_pct")}
+                          for org, u in outside_usage().items()}))
     elif cmd == "reopen" and len(argv) == 2:
         with board(write=True) as b:
             t = find(b, int(argv[1]))
@@ -793,12 +1110,16 @@ def cli(argv):
             note(t, "you", "reopened by user")
         print(f"Task #{t['id']} reopened.")
     else:
-        print('usage: board.py [show | add "title" ["detail"] | reopen <id> | call <tool> [json] | serve | web [--open]]')
+        print('usage: board.py [show | add "title" ["detail"] | reopen <id> | settings [set k v] | detect-accounts | '
+              'call <tool> [json] | serve | web [--open] | push-usage]')
         return 1
     return 0
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdout, sys.stderr):  # Windows defaults to a legacy code page; task titles may have emoji
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if sys.argv[1:2] == ["serve"]:
         serve()
     elif sys.argv[1:2] == ["push-usage"]:
@@ -808,4 +1129,8 @@ if __name__ == "__main__":
         port = int(next((x for x in rest if x.isdigit()), PORT))
         web_open(port) if "--open" in rest else web(port)
     else:
-        sys.exit(cli(sys.argv[1:]))
+        try:
+            sys.exit(cli(sys.argv[1:]))
+        except ValueError as e:  # bad input: a clean message, no traceback
+            print(e, file=sys.stderr)
+            sys.exit(1)

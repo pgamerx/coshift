@@ -1,6 +1,6 @@
 {
   "name": "coshift",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Run several Claude Code accounts on one project in parallel: a shared task board with usage-aware handovers, context-limit restarts and a phone-friendly page.",
   "keywords": ["claude", "claude-code", "anthropic", "ai-agents", "multi-agent", "task-board", "mcp", "handover", "vercel"],
   "homepage": "https://github.com/pgamerx/coshift#readme",
@@ -15,6 +15,10 @@
     "api/",
     "scripts/",
     "mac/claude-switch",
+    "mac/menubar/main.swift",
+    "mac/menubar/Info.plist",
+    "mac/menubar/install-menubar.sh",
+    "tray/",
     "vercel.json",
     ".vercelignore"
   ],

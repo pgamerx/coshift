@@ -47,12 +47,12 @@ export const HowItWorks: React.FC = () => (
     <Node x={30} y={300} w={230} h={110} title="FORGE session" sub="Claude Code, cloud or desktop" color={C.accent} />
     <Node x={495} y={170} w={250} h={180} title="Coshift board" sub={"Vercel + Upstash Redis\ntasks · notes · usage · context"} dashed color={C.accent} />
     <Node x={975} y={70} w={210} h={100} title="You" sub="board page, on your phone" />
-    <Node x={975} y={210} w={210} h={100} title="Your Mac" sub="optional usage pusher" />
+    <Node x={975} y={210} w={210} h={100} title="Live limits" sub="status line / usage pusher" />
     <Node x={975} y={350} w={210} h={100} title="Context hook" sub="runs after tool calls" />
     <Arrow x1={260} y1={165} x2={493} y2={230} label="claim · notes · save_context" />
     <Arrow x1={260} y1={355} x2={493} y2={290} label="each with its own token" dy={14} />
     <Arrow x1={973} y1={120} x2={747} y2={210} label="tasks · guidance · messages" />
-    <Arrow x1={973} y1={260} x2={747} y2={260} label="5-hour + weekly %" color={C.warn} />
+    <Arrow x1={973} y1={260} x2={747} y2={260} label="5-hour + weekly % + window" color={C.warn} />
     <Arrow x1={973} y1={400} x2={747} y2={310} label="context %" color={C.ok} dy={14} />
     <div style={{ position: "absolute", left: 40, right: 40, top: 470, fontSize: 17, color: C.muted, textAlign: "center" }}>
       Sessions coordinate through the board, not through you. Each token tells the board which account is calling.

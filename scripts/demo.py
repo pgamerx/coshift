@@ -13,9 +13,10 @@ now = time.time()
 m = lambda minutes: now - minutes * 60  # noqa: E731
 
 
-def task(i, title, detail, status, owner="", notes=(), session=""):
+def task(i, title, detail, status, owner="", notes=(), session="", files=(), deps=(), ask=None):
     return {"id": i, "title": title, "detail": detail, "status": status, "owner": owner, "created_by": "ATLAS",
-            "updated": m(3 + i), "session": session,
+            "updated": m(3 + i), "session": session, "files": list(files), "depends_on": list(deps),
+            **({"needs_input": {"q": ask, "t": m(2), "by": owner}} if ask else {}),
             "notes": [{"t": m(mins), "by": by, "text": text} for mins, by, text in notes]}
 
 
@@ -32,11 +33,15 @@ demo = {
     "tasks": [
         task(1, "Checkout: add address validation", "Files: src/checkout/*. Done = invalid postcodes rejected, tests green.",
              "claimed", "ATLAS", [(25, "ATLAS", "Schema done; wiring the form next. Branch: feat/checkout-validation"),
-                                  (4, "ATLAS", "Form wired, 2 tests left to fix")], "a1"),
+                                  (4, "ATLAS", "Form wired, 2 tests left to fix")], "a1",
+             files=["src/checkout/"], ask="Reject PO boxes, or just warn?"),
         task(2, "Orders list: pagination", "src/orders/List.tsx + API ?page=. Done = 50 per page, URL keeps the page.",
-             "claimed", "FORGE", [(6, "FORGE", "API paging done, starting the UI")], "f1"),
-        task(3, "Emails: order-shipped template", "templates/shipped.mjml. Done = renders in the preview tool.", "open"),
-        task(4, "Fix flaky cart test", "tests/cart.spec.ts fails 1 in 10 runs on CI.", "open"),
+             "claimed", "FORGE", [(6, "FORGE", "API paging done, starting the UI")], "f1",
+             files=["src/orders/", "api/orders.ts"]),
+        task(3, "Emails: order-shipped template", "templates/shipped.mjml. Done = renders in the preview tool.", "open",
+             files=["templates/shipped.mjml"], deps=(2,)),
+        task(4, "Fix flaky cart test", "tests/cart.spec.ts fails 1 in 10 runs on CI.", "open",
+             files=["tests/cart.spec.ts"]),
         task(5, "Product page: image zoom", "Use the existing Lightbox component. Mobile pinch to zoom.", "open"),
         task(6, "Search: debounce input", "Done = one request per 300 ms of typing.", "done", "FORGE",
              [(90, "FORGE", "done: debounced with useDebounce, added a test")]),
