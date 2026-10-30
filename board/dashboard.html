@@ -381,7 +381,7 @@ function render(s) {
   $("accounts").innerHTML = s.accounts.length ? s.accounts.map(u => {
     const n = keyOf(u);
     const label = esc(u.profile && u.email && u.profile.toUpperCase() !== u.email.toUpperCase() ? `${u.profile} · ${u.email}` : (u.email || u.profile));
-    const status = u.stop ? `<span class="pill stop">Stopped</span>` : `<span class="pill ok">Working</span>`;
+    const status = u.stop ? `<span class="pill stop" title="past the stop line: its sessions hand over and take no new tasks">At stop line</span>` : `<span class="pill ok" title="under the stop lines">Has room</span>`;
     const ss = s.sessions.filter(x => (x.account || "").toUpperCase() === n);
     const ctx = ss.filter(x => x.context_pct != null).map(x => `<span class="${x.context_pct >= s.stop_context ? "stop" : x.context_pct >= s.stop_context - 15 ? "warn" : ""}">${x.context_pct}%</span>`).join(" ");
     const saved = (s.contexts || {})[u.email] || (s.contexts || {})[u.profile];

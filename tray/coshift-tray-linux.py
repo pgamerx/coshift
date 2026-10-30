@@ -21,7 +21,7 @@ def account_lines(s):
     for a in s["accounts"]:
         pct = lambda v: "?" if v is None else f"{v}%"  # noqa: E731
         out.append((a["name"], f"{a['name']}   5h {pct(a['five_hour_pct'])} · week {pct(a['weekly_pct'])}"
-                               + ("  (stopped)" if a["stop"] else "")))
+                               + ("  (at stop line)" if a["stop"] else "")))
     return out
 
 

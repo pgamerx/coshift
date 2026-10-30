@@ -254,7 +254,7 @@ func coshiftAccount(_ c: CoshiftState?, for display: String) -> CoshiftAccount? 
 
 func limitsText(_ a: CoshiftAccount) -> String {
     let pct = { (v: Int?) in v.map { "\($0)%" } ?? "?" }
-    return "5h \(pct(a.fiveHour)) · wk \(pct(a.weekly))" + (a.stop.isEmpty ? "" : " · stopped")
+    return "5h \(pct(a.fiveHour)) · wk \(pct(a.weekly))" + (a.stop.isEmpty ? "" : " · at stop line")
 }
 
 func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) -> [MenuItemSpec] {

@@ -44,7 +44,7 @@ function Refresh-Tray {
     $tip = @()
     foreach ($a in $s.accounts) {
       $line = "{0}   5h {1}%  -  week {2}%" -f $a.name, $a.five_hour_pct, $a.weekly_pct
-      if ($a.stop) { $line += "  (stopped)" }
+      if ($a.stop) { $line += "  (at stop line)" }
       $n = $a.name
       $item = $menu.Items.Add($line)
       $item.add_Click({ Start-Process "cmd.exe" -ArgumentList "/k", "coshift run $n" }.GetNewClosure())
