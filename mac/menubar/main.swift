@@ -19,11 +19,12 @@ struct MenuItemSpec: Equatable {
     let enabled: Bool
     let checked: Bool
     let key: String?     // Command-<key> shortcut, if any
+    var detail = ""      // small grey text after the title, e.g. "Account 1"
 }
 
 func spec(_ title: String, _ action: String, enabled: Bool = true, checked: Bool = false,
-          key: String? = nil) -> MenuItemSpec {
-    MenuItemSpec(title: title, action: action, enabled: enabled, checked: checked, key: key)
+          key: String? = nil, detail: String = "") -> MenuItemSpec {
+    MenuItemSpec(title: title, action: action, enabled: enabled, checked: checked, key: key, detail: detail)
 }
 
 func parseActive(status: String) -> String? {
@@ -162,13 +163,6 @@ func saveNames(_ entries: [String: NameEntry], settings: Settings, path: String 
 }
 
 func displayName(_ real: String, _ names: [String: NameEntry]) -> String { names[real]?.name ?? real }
-
-/// Name plus optional icon emoji, as shown in the menu rows (the menu bar never shows the emoji).
-func displayText(_ real: String, _ names: [String: NameEntry]) -> String {
-    let n = displayName(real, names)
-    if let i = names[real]?.icon { return "\(i) \(n)" }
-    return n
-}
 
 /// Accent per profile: the stored one if valid, otherwise the first palette color no other profile uses
 /// (in list order, so `main` gets orange and `second` blue); cycles if there are more profiles than colors.
@@ -366,18 +360,19 @@ func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [St
     if profiles.isEmpty { m.append(spec("No profiles found", "none", enabled: false)) }
     for p in profiles {
         let isActive = p.name == active
-        let t = displayText(p.name, names) + (p.incomplete ? " (incomplete)" : "")  // limits are in the panel above
+        let t = displayName(p.name, names) + (p.incomplete ? " (incomplete)" : "")  // plain name; limits are in the panel
         // The active row is a no-op (never re-runs a switch); it is just enabled so it reads at full contrast.
         // Switching to a profile that's open side by side closes that instance first (claude-switch use does it).
-        m.append(spec(t, isActive ? "noop" : "use:\(p.name)", enabled: !switching && !p.incomplete, checked: isActive))
+        m.append(spec(t, isActive ? "noop" : "use:\(p.name)", enabled: !switching && !p.incomplete, checked: isActive,
+                      detail: "Account \((profiles.firstIndex(of: p) ?? 0) + 1)"))
     }
     let others = profiles.filter { $0.name != active && !$0.incomplete }
     if let o = others.first {
         // Switching is the profile rows above; here only the side-by-side window.
         // Closing its window doesn't quit the second instance on macOS, so offer to close it here.
         m.append(sideBySide
-                 ? spec("Close \(displayText(o.name, names)) Side by Side", "sbsclose:\(o.name)", enabled: !switching, key: "o")
-                 : spec("Open \(displayText(o.name, names)) Side by Side", "sbs:\(o.name)", enabled: !switching, key: "o"))
+                 ? spec("Close \(displayName(o.name, names)) Side by Side", "sbsclose:\(o.name)", enabled: !switching, key: "o")
+                 : spec("Open \(displayName(o.name, names)) Side by Side", "sbs:\(o.name)", enabled: !switching, key: "o"))
     } else {
         m.append(spec("No other profile", "none", enabled: false))
     }
@@ -475,7 +470,7 @@ func printMenu() {
                            sideBySide: parseSideBySide(status: status), coshift: loadCoshift()) {
             if i.action == "sep" { print("  ----"); continue }
             if i.action == "header" { print("  \(i.title.uppercased())"); continue }
-            print("  [\(i.checked ? "x" : " ")] \(i.title)"
+            print("  [\(i.checked ? "x" : " ")] \(i.title)" + (i.detail.isEmpty ? "" : "  (\(i.detail))")
                   + (i.key.map { "    Cmd-\($0.uppercased())" } ?? "")
                   + (i.enabled ? "" : "  (disabled)"))
         }
@@ -496,6 +491,7 @@ final class MenuRow: NSView {
         self.spec = spec
         super.init(frame: .zero)
         let w = (spec.title as NSString).size(withAttributes: [.font: titleFont]).width
+            + (spec.detail as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width + 7
         frame = NSRect(x: 0, y: 0, width: min(460, ceil(w) + MenuRow.inset + 64), height: header ? 22 : 24)
         autoresizingMask = [.width]
         toolTip = spec.title.count > 60 ? spec.title : nil
@@ -520,6 +516,10 @@ final class MenuRow: NSView {
         let rw = ceil(r.size().width)
         let ty = header ? 3 : (bounds.height - t.size().height) / 2
         t.draw(in: NSRect(x: MenuRow.inset, y: ty, width: bounds.width - MenuRow.inset - rw - 28, height: t.size().height))
+        if !spec.detail.isEmpty {  // e.g. "Account 1", small and grey right after the name
+            let d = NSAttributedString(string: spec.detail, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: side])
+            d.draw(at: NSPoint(x: MenuRow.inset + ceil(t.size().width) + 7, y: (bounds.height - d.size().height) / 2))
+        }
         r.draw(at: NSPoint(x: bounds.width - MenuRow.inset - rw, y: (bounds.height - r.size().height) / 2))
     }
 
@@ -573,9 +573,8 @@ func barImage(symbol: String, tint: String) -> NSImage? {
 final class RenameForm: NSObject {
     let profilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let field = NSTextField(frame: .zero)
-    let iconPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let colorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 122))
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 92))
     let reals: [String]
     var names: [String: NameEntry]
     var accents: [String: String]
@@ -587,33 +586,26 @@ final class RenameForm: NSObject {
         super.init()
         for r in reals { profilePopup.addItem(withTitle: "\(r)  (\(displayName(r, names)))") }
         profilePopup.selectItem(at: reals.firstIndex(of: preselect) ?? 0)
-        for p in iconPresets { iconPopup.addItem(withTitle: p.emoji.isEmpty ? "No icon" : "\(p.emoji)  \(p.label)") }
         for c in accentPalette {
             colorPopup.addItem(withTitle: c.label)
             colorPopup.lastItem?.image = swatchImage(nsColor(c.id))
         }
         profilePopup.target = self; profilePopup.action = #selector(profileChanged)
-        profilePopup.frame = NSRect(x: 0, y: 96, width: 280, height: 26)
-        field.frame = NSRect(x: 0, y: 66, width: 280, height: 24)
-        iconPopup.frame = NSRect(x: 0, y: 34, width: 280, height: 26)
+        profilePopup.frame = NSRect(x: 0, y: 66, width: 280, height: 26)
+        field.frame = NSRect(x: 0, y: 36, width: 280, height: 24)
         colorPopup.frame = NSRect(x: 0, y: 4, width: 280, height: 26)
-        [profilePopup, field, iconPopup, colorPopup].forEach { view.addSubview($0) }
+        [profilePopup, field, colorPopup].forEach { view.addSubview($0) }
         profileChanged()
     }
 
     var selectedReal: String { reals[max(0, profilePopup.indexOfSelectedItem)] }
-    var selectedIcon: String? {
-        let e = iconPresets[max(0, iconPopup.indexOfSelectedItem)].emoji
-        return e.isEmpty ? nil : e
-    }
+    var selectedIcon: String? { names[selectedReal]?.icon }  // no icon picker any more; keep what's saved
 
     var selectedColor: String { accentPalette[max(0, colorPopup.indexOfSelectedItem)].id }
 
     @objc func profileChanged() {
         let r = selectedReal
         field.stringValue = displayName(r, names)
-        let i = iconPresets.firstIndex(where: { $0.emoji == (names[r]?.icon ?? "") }) ?? 0
-        iconPopup.selectItem(at: i)
         colorPopup.selectItem(at: accentPalette.firstIndex { $0.id == accents[r] } ?? 0)
     }
 }
