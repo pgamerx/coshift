@@ -65,7 +65,7 @@ Sessions follow a protocol the board gives them when they connect:
 
 **Is it actually working?** "At stop line" only means an account's limits are past your stop line. Whether its sessions are working shows separately, on the board's account cards and in the menu bar: how many sessions were active in the last 3 hours, when the last one did something, and how many hold a task but have gone quiet for 15+ minutes (stuck, or waiting on you).
 
-**Account mix-ups (macOS).** If the Claude desktop app is signed in as a different account than the switcher's name for the profile in use, its usage would be reported, and its work handed over, under the wrong name. The board and the menu bar warn you when that happens.
+**Account mix-ups (macOS).** If the Claude desktop app is signed in as a different account than the switcher's name for the profile in use, its usage would be reported, and its work handed over, under the wrong name. The menu bar warns you when that happens (so does the board page when it runs on this Mac; a hosted board can't see your Mac).
 
 From the page you can add tasks (with files and order), answer questions, add notes, reopen or cancel tasks (cancelled tasks are kept, just hidden), send a one-off message to one account or all, and write **guidance**: standing rules every session sees with each board check until you remove them. Add `?theme=light` or `?theme=dark` to the page's address to force a theme.
 
