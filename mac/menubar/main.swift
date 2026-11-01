@@ -318,6 +318,8 @@ func coshiftPanel(_ c: CoshiftState) -> NSView {
     stack.alignment = .leading
     stack.spacing = 4
     stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    var bars: [NSStackView] = []
     func label(_ s: String, size: CGFloat = 11, bold: Bool = false, color: NSColor = .secondaryLabelColor) -> NSTextField {
         let l = NSTextField(labelWithString: s)
         l.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
@@ -331,11 +333,15 @@ func coshiftPanel(_ c: CoshiftState) -> NSView {
         ind.warningValue = Double(stop - 15)
         ind.criticalValue = Double(stop)
         ind.doubleValue = Double(v ?? 0)
-        ind.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        ind.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
+        ind.setContentHuggingPriority(.defaultLow, for: .horizontal)  // takes the menu's spare width
         let t = label(title), pct = label(v.map { "\($0)%" } ?? "?", color: .labelColor)
         t.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        pct.alignment = .right
+        pct.widthAnchor.constraint(equalToConstant: 34).isActive = true
         let row = NSStackView(views: [t, ind, pct])
         row.spacing = 6
+        bars.append(row)
         return row
     }
     for (i, a) in c.accounts.enumerated() {
@@ -350,9 +356,18 @@ func coshiftPanel(_ c: CoshiftState) -> NSView {
         stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!)
         stack.addArrangedSubview(label(projectsText(c.projects)))
     }
-    stack.layoutSubtreeIfNeeded()
-    stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
-    return stack
+    // stretch with the menu so the percentages end on the same right edge as the shortcuts below
+    let box = NSView()
+    box.addSubview(stack)
+    NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+                                 stack.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+                                 stack.topAnchor.constraint(equalTo: box.topAnchor),
+                                 stack.bottomAnchor.constraint(equalTo: box.bottomAnchor)]
+                                + bars.map { $0.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14) })
+    let size = stack.fittingSize
+    box.frame = NSRect(origin: .zero, size: size)
+    box.autoresizingMask = [.width]
+    return box
 }
 
 func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [String: NameEntry],
@@ -541,9 +556,27 @@ final class MenuRow: NSView {
         guard spec.enabled, !header, let item = enclosingMenuItem, let menu = item.menu else { return }
         menu.cancelTracking()
         let i = menu.index(of: item)
-        // after the menu has closed, so a dialog it opens (Rename) gets the keyboard, not the app that was in front
-        DispatchQueue.main.async { menu.performActionForItem(at: i) }
+        // only once the menu has fully finished tracking (default run loop mode, like a normal menu item), so a
+        // dialog it opens (Rename) gets the keyboard
+        RunLoop.main.perform(inModes: [.default]) { menu.performActionForItem(at: i) }
     }
+}
+
+/// A separator on the same edges as the rows (the built-in one is indented differently from custom rows).
+final class SepRow: NSView {
+    init() { super.init(frame: NSRect(x: 0, y: 0, width: 100, height: 11)); autoresizingMask = [.width] }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirty: NSRect) {
+        NSColor.separatorColor.setFill()
+        NSRect(x: MenuRow.inset, y: 5, width: bounds.width - 2 * MenuRow.inset, height: 1).fill()
+    }
+}
+
+func sepItem() -> NSMenuItem {
+    let i = NSMenuItem()
+    i.view = SepRow()
+    i.isEnabled = false
+    return i
 }
 
 // MARK: - AppKit helpers
@@ -567,22 +600,22 @@ func swatchImage(_ color: NSColor) -> NSImage {
 
 /// The menu bar symbol: medium weight at menu bar font size, tinted via a palette configuration.
 /// If tinting is unavailable (older macOS or a failed configuration) it falls back to a template image.
+/// The Coshift logo (the board page's tilted rounded bar, 26:8, rotated 18°) in the profile's color.
+/// `symbol` is kept for the label's equality checks; the drawing no longer uses an SF Symbol.
 func barImage(symbol: String, tint: String) -> NSImage? {
-    let size = NSFont.menuBarFont(ofSize: 0).pointSize
-    let names = [symbol, "sparkles", "star.fill"]   // older macOS may lack "sparkle"
-    guard let base = names.lazy.compactMap({ NSImage(systemSymbolName: $0, accessibilityDescription: "Claude profile") }).first
-    else { return nil }
-    let sized = NSImage.SymbolConfiguration(pointSize: size, weight: .medium)
-    if #available(macOS 12.0, *) {
-        let cfg = sized.applying(NSImage.SymbolConfiguration(paletteColors: [nsColor(tint)]))
-        if let tinted = base.withSymbolConfiguration(cfg) {
-            tinted.isTemplate = false
-            return tinted
-        }
+    let h = NSFont.menuBarFont(ofSize: 0).pointSize + 3
+    let img = NSImage(size: NSSize(width: h + 2, height: h), flipped: false) { r in
+        let t = NSAffineTransform()
+        t.translateX(by: r.midX, yBy: r.midY)
+        t.rotate(byDegrees: 18)
+        t.concat()
+        let w = r.width * 0.92, bh = w * 8 / 26
+        nsColor(tint).setFill()
+        NSBezierPath(roundedRect: NSRect(x: -w / 2, y: -bh / 2, width: w, height: bh), xRadius: bh / 2, yRadius: bh / 2).fill()
+        return true
     }
-    let plain = base.withSymbolConfiguration(sized) ?? base
-    plain.isTemplate = true
-    return plain
+    img.isTemplate = false
+    return img
 }
 
 /// Popup/text-field glue for the rename dialog.
@@ -716,7 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for spec in buildMenu(active: active, profiles: profiles, switching: switching, names: names,
                               login: loginState(), showName: settings.showName, sideBySide: sideBySide,
                               coshift: coshift) {
-            if spec.action == "sep" { menu.addItem(.separator()); continue }
+            if spec.action == "sep" { menu.addItem(sepItem()); continue }
             let mi = NSMenuItem(title: spec.title, action: #selector(clicked(_:)), keyEquivalent: spec.key ?? "")
             mi.view = MenuRow(spec)
             if spec.key != nil { mi.keyEquivalentModifierMask = .command }
@@ -730,7 +763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let panel = NSMenuItem()
             panel.view = coshiftPanel(c)
             menu.insertItem(panel, at: 0)
-            menu.insertItem(.separator(), at: 1)
+            menu.insertItem(sepItem(), at: 1)
         }
     }
 
@@ -823,6 +856,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A menu bar app isn't the active app, so a dialog wouldn't get the keyboard. macOS 14+ ignores the old
     /// activate(ignoringOtherApps:) request in many cases; use the current call there.
     func bringToFront() {
+        NSApp.setActivationPolicy(.regular)  // a menu-bar-only app can't hold the keyboard; back to .accessory after
         if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
     }
 
@@ -835,6 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let form = RenameForm(reals: reals, preselect: active ?? reals[0], names: current)
         var error: String? = loaded.broken ? "names.json was unreadable; real names are shown. Saving will replace it (the old file is kept aside)." : nil
         bringToFront()
+        defer { NSApp.setActivationPolicy(.accessory) }
         while true {
             let alert = NSAlert()
             alert.messageText = "Rename profile"
@@ -1002,16 +1037,12 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-png"), i + 1 < Command
     var views: [NSView] = c.map { [coshiftPanel($0)] } ?? []
     for sp in specs {
         if sp.action == "sep" {
-            let line = NSBox(); line.boxType = .separator
-            let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 11))
-            line.frame = NSRect(x: 14, y: 5, width: 0, height: 1); line.autoresizingMask = [.width]
-            wrap.addSubview(line); views.append(wrap)
+            views.append(SepRow())
         } else {
             let r = MenuRow(sp); r.forceHighlight = sp.title == "Open Coshift Board"; views.append(r)
         }
     }
-    if c != nil { views.insert({ let w = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 11)); let l = NSBox(); l.boxType = .separator
-        l.frame = NSRect(x: 14, y: 5, width: 0, height: 1); l.autoresizingMask = [.width]; w.addSubview(l); return w }(), at: 1) }
+    if c != nil { views.insert(SepRow(), at: 1) }
     let width = max(300, views.map { $0.frame.width }.max() ?? 300)
     let height = views.map { $0.frame.height }.reduce(10, +)
     let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
@@ -1022,7 +1053,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-png"), i + 1 < Command
     var y = height - 5
     for v in views {
         y -= v.frame.height
-        v.frame = NSRect(x: 0, y: y, width: v is MenuRow || v.subviews.first is NSBox ? width : v.frame.width, height: v.frame.height)
+        v.frame = NSRect(x: 0, y: y, width: width, height: v.frame.height)  // every item takes the menu's width
         root.addSubview(v)
     }
     root.layoutSubtreeIfNeeded()
