@@ -279,6 +279,16 @@ func limitsText(_ a: CoshiftAccount) -> String {
     return "5h \(pct(a.fiveHour)) · wk \(pct(a.weekly))" + (a.stop.isEmpty ? "" : " · at stop line")
 }
 
+/// The account with the most room before its nearer stop line (the same measure as `coshift run`). An account
+/// that hasn't signed in to Claude Code yet gets its sign-in on first start.
+func mostLimitLeft(_ c: CoshiftState) -> String? {
+    let room = { (a: CoshiftAccount) -> Int in
+        guard let f = a.fiveHour, let w = a.weekly else { return 0 }  // unknown usage: neutral, like the CLI
+        return min(c.stop5h - f, c.stopWeek - w)
+    }
+    return c.accounts.max { room($0) < room($1) }?.name
+}
+
 func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) -> [MenuItemSpec] {
     guard let c = c else { return [spec("Open Coshift Board", "board", key: "b")] }
     var m = [spec("Coshift", "header", enabled: false)]
@@ -290,7 +300,11 @@ func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) 
         let n = c.needs.count
         m.append(spec("⚠︎ \(n) task\(n == 1 ? "" : "s") need\(n == 1 ? "s" : "") you: #\(c.needs[0].id) \(c.needs[0].title)", "board"))
     }
-    m.append(spec("Start Claude Code (most limit left)", "run:", enabled: !switching, key: "n"))
+    if let best = mostLimitLeft(c) {
+        m.append(spec("Start \(best) in Claude Code", "run:\(best)", enabled: !switching, key: "n", detail: "most limit left"))
+    } else {
+        m.append(spec("Start Claude Code", "run:", enabled: !switching, key: "n"))
+    }
     m.append(spec("Open Coshift Board", "board", key: "b"))
     m.append(spec("Coshift Settings...", "settings", key: ","))
     return m
