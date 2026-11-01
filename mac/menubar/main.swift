@@ -267,11 +267,12 @@ func activityText(_ a: CoshiftAccount, quiet: Bool = true) -> String {
     return "\(a.sessions) session\(a.sessions == 1 ? "" : "s") · last action \(ago)" + (quiet && a.quiet > 0 ? " · \(a.quiet) quiet 15m+" : "")
 }
 
-/// "storefront · 1 working, 3 queued, 1 needs you"
-func projectLine(_ p: CoshiftProject) -> String {
-    let bits = [p.claimed > 0 ? "\(p.claimed) working" : "", p.open > 0 ? "\(p.open) queued" : "",
-                p.needs > 0 ? "\(p.needs) need\(p.needs == 1 ? "s" : "") you" : ""].filter { !$0.isEmpty }
-    return (p.name == "default" ? "Main board" : p.name) + (bits.isEmpty ? "" : " · " + bits.joined(separator: ", "))
+func projectsText(_ ps: [CoshiftProject]) -> String {
+    ps.map { p in
+        let bits = [p.claimed > 0 ? "\(p.claimed) working" : "", p.open > 0 ? "\(p.open) queued" : "",
+                    p.needs > 0 ? "\(p.needs) need you" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return "\(p.name == "default" ? "Main board" : p.name): \(bits)"
+    }.joined(separator: "\n")
 }
 
 /// Coshift account whose name matches a desktop profile's display name (e.g. profile "main" shown as ATLAS).
@@ -288,7 +289,6 @@ func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) 
     guard let c = c else { return [spec("Open Coshift Board", "board", key: "b")] }
     var m = [spec("Coshift", "header", enabled: false)]
     if !c.mismatch.isEmpty { m.append(spec("⚠︎ Account mix-up: \(c.mismatch)", "board")) }
-    for p in c.projects { m.append(spec(projectLine(p), "project:\(p.name)")) }  // opens that project's board
     for a in c.accounts where !shown.contains(a.name.uppercased()) {  // profiles above already show theirs
         m.append(spec("Start Claude Code as \(a.name)", "run:\(a.name)", enabled: !switching))
     }
@@ -302,74 +302,49 @@ func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) 
     return m
 }
 
-/// The accounts panel at the top of the menu: per account its name (with the switcher's icon), whether the desktop
-/// app is on it, its 5-hour and weekly bars (yellow 15 points before the stop line, red at it) and whether its sessions
-/// are working. It stretches to the menu's width and lines up with the menu items' text. Read-only.
-let panelInset: CGFloat = 22  // where AppKit starts a menu item's title (after the checkmark column)
-
-func coshiftPanel(_ c: CoshiftState, icons: [String: String] = [:], inApp: String? = nil) -> NSView {
+/// The panel at the top of the menu: each account's 5-hour and weekly bars (yellow 15 points before its stop line,
+/// red at it), whether its sessions are active, and the projects with work. Read-only; actions are the items below.
+func coshiftPanel(_ c: CoshiftState) -> NSView {
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 3
-    stack.edgeInsets = NSEdgeInsets(top: 4, left: panelInset, bottom: 6, right: 14)
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    func label(_ s: String, size: CGFloat = 11, weight: NSFont.Weight = .regular, color: NSColor = .secondaryLabelColor) -> NSTextField {
+    stack.spacing = 4
+    stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
+    func label(_ s: String, size: CGFloat = 11, bold: Bool = false, color: NSColor = .secondaryLabelColor) -> NSTextField {
         let l = NSTextField(labelWithString: s)
-        l.font = .systemFont(ofSize: size, weight: weight)
+        l.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
         l.textColor = color
         return l
     }
-    func row(_ views: [NSView]) -> NSStackView {
-        let r = NSStackView(views: views)
-        r.spacing = 8
-        r.distribution = .fill
-        return r
-    }
-    func bar(_ title: String, _ v: Int?, stop: Int) -> NSStackView {
+    func bar(_ title: String, _ v: Int?, stop: Int) -> NSView {
         let ind = NSLevelIndicator()
         ind.levelIndicatorStyle = .continuousCapacity
         ind.maxValue = 100
         ind.warningValue = Double(stop - 15)
         ind.criticalValue = Double(stop)
         ind.doubleValue = Double(v ?? 0)
-        ind.setContentHuggingPriority(.defaultLow, for: .horizontal)  // the bar takes the spare width
+        ind.widthAnchor.constraint(equalToConstant: 190).isActive = true
         let t = label(title), pct = label(v.map { "\($0)%" } ?? "?", color: .labelColor)
-        t.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        pct.alignment = .right
-        pct.widthAnchor.constraint(equalToConstant: 34).isActive = true
-        return row([t, ind, pct])
+        t.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        let row = NSStackView(views: [t, ind, pct])
+        row.spacing = 6
+        return row
     }
-    var rows: [NSStackView] = []
     for (i, a) in c.accounts.enumerated() {
-        let icon = icons[a.name.uppercased()].map { $0 + " " } ?? ""
-        let tag = !a.stop.isEmpty ? label("at stop line", color: .systemOrange)
-            : a.name.caseInsensitiveCompare(inApp ?? "") == .orderedSame ? label("in the app") : label("")
-        let head = row([label(icon + a.name, size: 13, weight: .semibold, color: .labelColor), NSView(), tag])
-        let act = label("")
-        let base = NSMutableAttributedString(string: activityText(a, quiet: false),
-                                             attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)])
-        if a.quiet > 0 {  // only the warning is orange, not the whole line
-            base.append(NSAttributedString(string: " · \(a.quiet) quiet 15m+",
-                                           attributes: [.foregroundColor: NSColor.systemOrange, .font: NSFont.systemFont(ofSize: 11)]))
-        }
-        act.attributedStringValue = base
-        if i > 0 { stack.setCustomSpacing(12, after: stack.arrangedSubviews.last!) }
-        for r in [head, bar("5h", a.fiveHour, stop: c.stop5h), bar("wk", a.weekly, stop: c.stopWeek), row([act])] {
-            stack.addArrangedSubview(r)
-            rows.append(r)
-        }
+        if i > 0 { stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!) }
+        stack.addArrangedSubview(label(a.name + (a.stop.isEmpty ? "" : "  · at stop line"), size: 13, bold: true,
+                                       color: a.stop.isEmpty ? .labelColor : .systemOrange))
+        stack.addArrangedSubview(bar("5h", a.fiveHour, stop: c.stop5h))
+        stack.addArrangedSubview(bar("wk", a.weekly, stop: c.stopWeek))
+        stack.addArrangedSubview(label(activityText(a), color: a.quiet > 0 ? .systemOrange : .secondaryLabelColor))
     }
-    let box = NSView()
-    box.addSubview(stack)
-    NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: box.leadingAnchor),
-                                 stack.trailingAnchor.constraint(equalTo: box.trailingAnchor),
-                                 stack.topAnchor.constraint(equalTo: box.topAnchor),
-                                 stack.bottomAnchor.constraint(equalTo: box.bottomAnchor)]
-                                + rows.map { $0.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14) })
-    box.frame = NSRect(x: 0, y: 0, width: 300, height: stack.fittingSize.height)
-    box.autoresizingMask = [.width]  // the menu widens it to its own width
-    return box
+    if !c.projects.isEmpty {
+        stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(label(projectsText(c.projects)))
+    }
+    stack.layoutSubtreeIfNeeded()
+    stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+    return stack
 }
 
 func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [String: NameEntry],
@@ -504,6 +479,54 @@ func printMenu() {
                   + (i.key.map { "    Cmd-\($0.uppercased())" } ?? "")
                   + (i.enabled ? "" : "  (disabled)"))
         }
+    }
+}
+
+// MARK: - Menu rows drawn in the panel's style (same left edge, fonts and greys), so the menu reads as one piece
+
+final class MenuRow: NSView {
+    let spec: MenuItemSpec
+    var forceHighlight = false  // --render-menu only
+    var header: Bool { spec.action == "header" }
+    static let inset: CGFloat = 14  // the panel's left edge
+    var titleFont: NSFont { header ? .systemFont(ofSize: 11, weight: .semibold) : .systemFont(ofSize: 13) }
+    var right: String { spec.checked ? "✓" : spec.key.map { "⌘" + ($0 == "," ? "," : $0.uppercased()) } ?? "" }
+
+    init(_ spec: MenuItemSpec) {
+        self.spec = spec
+        super.init(frame: .zero)
+        let w = (spec.title as NSString).size(withAttributes: [.font: titleFont]).width
+        frame = NSRect(x: 0, y: 0, width: min(460, ceil(w) + MenuRow.inset + 64), height: header ? 22 : 24)
+        autoresizingMask = [.width]
+        toolTip = spec.title.count > 60 ? spec.title : nil
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    var highlighted: Bool { (forceHighlight || enclosingMenuItem?.isHighlighted == true) && spec.enabled && !header }
+
+    override func draw(_ dirty: NSRect) {
+        if highlighted {
+            NSColor.selectedContentBackgroundColor.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
+        }
+        let color: NSColor = header ? .secondaryLabelColor : !spec.enabled ? .tertiaryLabelColor : highlighted ? .white : .labelColor
+        let side: NSColor = highlighted ? .white.withAlphaComponent(0.8) : .secondaryLabelColor
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        let t = NSAttributedString(string: header ? spec.title.uppercased() : spec.title,
+                                   attributes: [.font: titleFont, .foregroundColor: color, .paragraphStyle: style,
+                                                .kern: header ? 0.6 : 0])
+        let r = NSAttributedString(string: right, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: side])
+        let rw = ceil(r.size().width)
+        let ty = header ? 3 : (bounds.height - t.size().height) / 2
+        t.draw(in: NSRect(x: MenuRow.inset, y: ty, width: bounds.width - MenuRow.inset - rw - 28, height: t.size().height))
+        r.draw(at: NSPoint(x: bounds.width - MenuRow.inset - rw, y: (bounds.height - r.size().height) / 2))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard spec.enabled, !header, let item = enclosingMenuItem, let menu = item.menu else { return }
+        menu.cancelTracking()
+        menu.performActionForItem(at: menu.index(of: item))
     }
 }
 
@@ -686,10 +709,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               login: loginState(), showName: settings.showName, sideBySide: sideBySide,
                               coshift: coshift) {
             if spec.action == "sep" { menu.addItem(.separator()); continue }
-            if spec.action == "header" {
-                if #available(macOS 14.0, *) { menu.addItem(.sectionHeader(title: spec.title)); continue }
-            }
             let mi = NSMenuItem(title: spec.title, action: #selector(clicked(_:)), keyEquivalent: spec.key ?? "")
+            mi.view = MenuRow(spec)
             if spec.key != nil { mi.keyEquivalentModifierMask = .command }
             mi.target = self
             mi.representedObject = spec.action
@@ -699,9 +720,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let c = coshift, !c.accounts.isEmpty {
             let panel = NSMenuItem()
-            var icons: [String: String] = [:]
-            for p in profiles { if let i = names[p.name]?.icon { icons[displayName(p.name, names).uppercased()] = i } }
-            panel.view = coshiftPanel(c, icons: icons, inApp: active.map { displayName($0, names) })
+            panel.view = coshiftPanel(c)
             menu.insertItem(panel, at: 0)
             menu.insertItem(.separator(), at: 1)
         }
@@ -956,11 +975,50 @@ func renderPNG(to path: String) {
 
 if let i = CommandLine.arguments.firstIndex(of: "--render-png"), i + 1 < CommandLine.arguments.count {
     renderPNG(to: CommandLine.arguments[i + 1])
+} else if let i = CommandLine.arguments.firstIndex(of: "--render-menu"), i + 1 < CommandLine.arguments.count {
+    // the whole menu (panel + rows, "Open Coshift Board" highlighted) from mock status/list and tray JSON on stdin
+    let env = ProcessInfo.processInfo.environment
+    let json = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let c = parseCoshift(json), loaded = loadNames()
+    let status = env["MOCK_STATUS"] ?? "", specs = buildMenu(active: parseActive(status: status),
+        profiles: parseProfiles(list: env["MOCK_LIST"] ?? ""), switching: false, names: loaded.entries, login: .on,
+        showName: loaded.settings.showName, sideBySide: false, coshift: c)
+    var views: [NSView] = c.map { [coshiftPanel($0)] } ?? []
+    for sp in specs {
+        if sp.action == "sep" {
+            let line = NSBox(); line.boxType = .separator
+            let wrap = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 11))
+            line.frame = NSRect(x: 14, y: 5, width: 0, height: 1); line.autoresizingMask = [.width]
+            wrap.addSubview(line); views.append(wrap)
+        } else {
+            let r = MenuRow(sp); r.forceHighlight = sp.title == "Open Coshift Board"; views.append(r)
+        }
+    }
+    if c != nil { views.insert({ let w = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 11)); let l = NSBox(); l.boxType = .separator
+        l.frame = NSRect(x: 14, y: 5, width: 0, height: 1); l.autoresizingMask = [.width]; w.addSubview(l); return w }(), at: 1) }
+    let width = max(300, views.map { $0.frame.width }.max() ?? 300)
+    let height = views.map { $0.frame.height }.reduce(10, +)
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+    let ap = NSAppearance(named: CommandLine.arguments.contains("--dark") ? .darkAqua : .aqua)!
+    root.appearance = ap
+    root.wantsLayer = true
+    ap.performAsCurrentDrawingAppearance { root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+    var y = height - 5
+    for v in views {
+        y -= v.frame.height
+        v.frame = NSRect(x: 0, y: y, width: v is MenuRow || v.subviews.first is NSBox ? width : v.frame.width, height: v.frame.height)
+        root.addSubview(v)
+    }
+    root.layoutSubtreeIfNeeded()
+    let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds)!
+    root.cacheDisplay(in: root.bounds, to: rep)
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+    print("wrote \(CommandLine.arguments[i + 1])")
 } else if let i = CommandLine.arguments.firstIndex(of: "--render-panel"), i + 1 < CommandLine.arguments.count {
     // the Coshift panel from tray JSON on stdin, drawn to a PNG (checks the layout without opening the menu)
     let json = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
     guard let c = parseCoshift(json) else { print("bad tray JSON"); exit(1) }
-    let v = coshiftPanel(c, icons: ["ATLAS": "⭐", "FORGE": "💼"], inApp: "ATLAS")
+    let v = coshiftPanel(c)
     let ap = NSAppearance(named: CommandLine.arguments.contains("--dark") ? .darkAqua : .aqua)!
     v.appearance = ap
     v.wantsLayer = true
