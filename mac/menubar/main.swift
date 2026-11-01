@@ -289,19 +289,25 @@ func mostLimitLeft(_ c: CoshiftState) -> String? {
     return c.accounts.max { room($0) < room($1) }?.name
 }
 
-func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) -> [MenuItemSpec] {
+/// Board account name (uppercased) -> the display name you gave the matching desktop profile.
+func prettyNames(_ profiles: [Profile], _ names: [String: NameEntry]) -> [String: String] {
+    Dictionary(profiles.map { (displayName($0.name, names).uppercased(), displayName($0.name, names)) }, uniquingKeysWith: { a, _ in a })
+}
+
+func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = [], pretty: [String: String] = [:]) -> [MenuItemSpec] {
+    let show = { (n: String) in pretty[n.uppercased()] ?? n }  // your name for it ("Forge"), not the board's ("FORGE")
     guard let c = c else { return [spec("Open Coshift Board", "board", key: "b")] }
     var m = [spec("Coshift", "header", enabled: false)]
     if !c.mismatch.isEmpty { m.append(spec("⚠︎ Account mix-up: \(c.mismatch)", "board")) }
     for a in c.accounts where !shown.contains(a.name.uppercased()) {  // profiles above already show theirs
-        m.append(spec("Start Claude Code as \(a.name)", "run:\(a.name)", enabled: !switching))
+        m.append(spec("Start Claude Code as \(show(a.name))", "run:\(a.name)", enabled: !switching))
     }
     if !c.needs.isEmpty {
         let n = c.needs.count
         m.append(spec("⚠︎ \(n) task\(n == 1 ? "" : "s") need\(n == 1 ? "s" : "") you: #\(c.needs[0].id) \(c.needs[0].title)", "board"))
     }
     if let best = mostLimitLeft(c) {
-        m.append(spec("Start \(best) in Claude Code", "run:\(best)", enabled: !switching, key: "n", detail: "most limit left"))
+        m.append(spec("Start \(show(best)) in Claude Code", "run:\(best)", enabled: !switching, key: "n", detail: "most limit left"))
     } else {
         m.append(spec("Start Claude Code", "run:", enabled: !switching, key: "n"))
     }
@@ -312,7 +318,7 @@ func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) 
 
 /// The panel at the top of the menu: each account's 5-hour and weekly bars (yellow 15 points before its stop line,
 /// red at it), whether its sessions are active, and the projects with work. Read-only; actions are the items below.
-func coshiftPanel(_ c: CoshiftState) -> NSView {
+func coshiftPanel(_ c: CoshiftState, pretty: [String: String] = [:]) -> NSView {
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -346,7 +352,7 @@ func coshiftPanel(_ c: CoshiftState) -> NSView {
     }
     for (i, a) in c.accounts.enumerated() {
         if i > 0 { stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!) }
-        stack.addArrangedSubview(label(a.name + (a.stop.isEmpty ? "" : "  · at stop line"), size: 13, bold: true,
+        stack.addArrangedSubview(label((pretty[a.name.uppercased()] ?? a.name) + (a.stop.isEmpty ? "" : "  · at stop line"), size: 13, bold: true,
                                        color: a.stop.isEmpty ? .labelColor : .systemOrange))
         stack.addArrangedSubview(bar("5h", a.fiveHour, stop: c.stop5h))
         stack.addArrangedSubview(bar("wk", a.weekly, stop: c.stopWeek))
@@ -408,7 +414,7 @@ func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [St
     m.append(spec("Rename...", "rename", enabled: !switching && !profiles.isEmpty, key: "r"))
     m.append(sep)
     m += coshiftItems(coshift, switching: switching,
-                      shown: Set(profiles.map { displayName($0.name, names).uppercased() }))
+                      shown: Set(profiles.map { displayName($0.name, names).uppercased() }), pretty: prettyNames(profiles, names))
     m.append(sep)
     m.append(spec(login == .needsApproval ? "Launch at Login (needs approval...)" : "Launch at Login", "login",
                   enabled: !switching && login != .unavailable, checked: login == .on))
@@ -761,7 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let c = coshift, !c.accounts.isEmpty {
             let panel = NSMenuItem()
-            panel.view = coshiftPanel(c)
+            panel.view = coshiftPanel(c, pretty: prettyNames(profiles, names))
             menu.insertItem(panel, at: 0)
             menu.insertItem(sepItem(), at: 1)
         }
@@ -1034,7 +1040,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-png"), i + 1 < Command
     let status = env["MOCK_STATUS"] ?? "", specs = buildMenu(active: parseActive(status: status),
         profiles: parseProfiles(list: env["MOCK_LIST"] ?? ""), switching: false, names: loaded.entries, login: .on,
         showName: loaded.settings.showName, sideBySide: false, coshift: c)
-    var views: [NSView] = c.map { [coshiftPanel($0)] } ?? []
+    var views: [NSView] = c.map { [coshiftPanel($0, pretty: prettyNames(parseProfiles(list: env["MOCK_LIST"] ?? ""), loaded.entries))] } ?? []
     for sp in specs {
         if sp.action == "sep" {
             views.append(SepRow())
