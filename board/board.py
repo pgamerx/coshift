@@ -12,7 +12,7 @@ number of sessions from either account can read and write it safely.
 No network calls, no credentials: each session reports its own plan usage, which
 Claude reads with the desktop app's get_usage tool.
 """
-import json, os, plistlib, re, socket, subprocess, sys, tempfile, time, urllib.request, uuid, webbrowser
+import json, os, plistlib, re, socket, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid, webbrowser
 from fnmatch import fnmatch
 
 try:  # exclusive lock on the local board file: fcntl on macOS/Linux, msvcrt on Windows
@@ -1340,7 +1340,9 @@ if __name__ == "__main__":
     elif sys.argv[1:2] == ["web"]:
         rest = sys.argv[2:]
         port = int(next((x for x in rest if x.isdigit()), PORT))
-        web_open(port, "#settings" if "--settings" in rest else "") if "--open" in rest else web(port)
+        proj = rest[rest.index("--project") + 1] if "--project" in rest[:-1] else ""
+        frag = (f"?project={urllib.parse.quote(proj)}" if proj and proj != MAIN else "") + ("#settings" if "--settings" in rest else "")
+        web_open(port, frag) if "--open" in rest else web(port)
     else:
         try:
             sys.exit(cli(sys.argv[1:]))
