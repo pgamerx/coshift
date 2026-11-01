@@ -540,7 +540,9 @@ final class MenuRow: NSView {
     override func mouseUp(with event: NSEvent) {
         guard spec.enabled, !header, let item = enclosingMenuItem, let menu = item.menu else { return }
         menu.cancelTracking()
-        menu.performActionForItem(at: menu.index(of: item))
+        let i = menu.index(of: item)
+        // after the menu has closed, so a dialog it opens (Rename) gets the keyboard, not the app that was in front
+        DispatchQueue.main.async { menu.performActionForItem(at: i) }
     }
 }
 
@@ -818,6 +820,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Display-name dialog. Only writes names.json; never calls claude-switch.
+    /// A menu bar app isn't the active app, so a dialog wouldn't get the keyboard. macOS 14+ ignores the old
+    /// activate(ignoringOtherApps:) request in many cases; use the current call there.
+    func bringToFront() {
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+    }
+
     func rename() {
         guard !switching, !profiles.isEmpty else { return }
         let loaded = loadNames()
@@ -826,7 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let reals = profiles.map { $0.name }
         let form = RenameForm(reals: reals, preselect: active ?? reals[0], names: current)
         var error: String? = loaded.broken ? "names.json was unreadable; real names are shown. Saving will replace it (the old file is kept aside)." : nil
-        NSApp.activate(ignoringOtherApps: true)
+        bringToFront()
         while true {
             let alert = NSAlert()
             alert.messageText = "Rename profile"
@@ -836,6 +844,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.addButton(withTitle: "Save")
             alert.addButton(withTitle: "Cancel")
             alert.window.initialFirstResponder = form.field
+            alert.layout()
+            alert.window.makeKeyAndOrderFront(nil)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let real = form.selectedReal
             var shown: [String: String] = [:]
