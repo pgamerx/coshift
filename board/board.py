@@ -260,6 +260,54 @@ def add_project(name):
     return name
 
 
+def canon(name):
+    """An account's current name: a renamed account keeps working under its old token, env var or remote.json entry."""
+    if not name:
+        return name
+    with _doc("board", False) as main:
+        return main.get("aliases", {}).get(name.upper(), name)
+
+
+def rename_account(old, new):
+    """Renames an account everywhere on every project board (limits, sessions, tasks, notes, messages, guidance, saved
+    context, its context window) and records old -> new, so its existing token and cloud variables keep working."""
+    old, new = old.strip().upper(), new.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_-]{1,20}", new) or new == "ADMIN":
+        raise ValueError("new name: 1-20 letters, digits, - or _ (and not ADMIN)")
+    if old == new:
+        raise ValueError("that's already its name")
+    with _doc("board", False) as main:
+        if main.get("aliases", {}).get(old) == new:
+            return new  # already renamed (e.g. on the page); the CLI still updates this computer's files
+        known = {k.upper() for k in main.get("usage", {})} | {v.upper() for v in main.get("aliases", {}).values()}
+    if new in known:
+        raise ValueError(f"{new} is already an account")
+    fix = lambda v: new if isinstance(v, str) and v.upper() == old else v  # noqa: E731
+    for name in [""] + projects():
+        with board(write=True, project=name) as b:
+            for d in (b["usage"], b.setdefault("contexts", {}), b.setdefault("settings", {}).setdefault("context_windows", {})):
+                for k in [k for k in d if k.upper() == old]:
+                    d[new] = d.pop(k)
+            for sess in b["sessions"].values():
+                sess["account"] = fix(sess.get("account"))
+            for t in b["tasks"]:
+                t["owner"], t["created_by"] = fix(t.get("owner")), fix(t.get("created_by"))
+                for n in t.get("notes", []):
+                    n["by"] = fix(n.get("by"))
+                if t.get("needs_input"):
+                    t["needs_input"]["by"] = fix(t["needs_input"].get("by"))
+            for m in b["messages"] + b["guidance"]:
+                m["to"], m["read_by"] = fix(m.get("to")), [fix(x) for x in m.get("read_by", [])]
+            if not name:  # aliases live on the main board; chains (A -> B -> C) point straight at the newest name
+                al = b.setdefault("aliases", {})
+                for k, v in list(al.items()):
+                    if v == old:
+                        al[k] = new
+                al[old] = new
+                al.pop(new, None)  # renaming back to an old name
+    return new
+
+
 def each_board():
     """(project, board) for the main board and every project, read-only."""
     for name in [""] + projects():
@@ -766,6 +814,8 @@ TOOLS = {
 
 
 def run_tool(name, args):
+    global ME
+    ME = canon(ME)
     try:
         text, err = TOOLS[name][0](args), False
     except (ValueError, KeyError, TypeError) as e:
@@ -1022,6 +1072,9 @@ def _web_state():
 
 def web_post(path, a):
     """Actions from the page. Never deletes: cancel just hides a task from the queue."""
+    if path == "/api/accounts/rename":
+        new = rename_account(a.get("old", ""), a.get("new", ""))
+        return f"Renamed to {new}. Its token and cloud variables keep working; sessions show the new name from their next board call."
     if path == "/api/projects":
         return f"Project {add_project(a.get('name', ''))} created. Sessions in a repo with that name use its board."
     if path == "/api/task":
@@ -1187,7 +1240,7 @@ def web_open(port, frag=""):
 def push_usage():
     """Copies every account's live usage (Claude Usage app / desktop app) into the shared board,
     under the account names from remote.json. Run every minute by a LaunchAgent on the Mac."""
-    names = REMOTE.get("accounts", {})
+    names = {org: canon(n) for org, n in REMOTE.get("accounts", {}).items()}
     live = {names[org]: u for org, u in outside_usage().items() if org in names}
     if not live:
         print("no usage found for the accounts in remote.json")
@@ -1217,7 +1270,7 @@ def tray_accounts(b):
 def ingest_statusline(d):
     """One Claude Code status-line update (its documented JSON) for account COSHIFT_AS: plan usage, the session's
     context, and the account's real context window size. Works the same on Windows, macOS and Linux."""
-    me = (os.environ.get("COSHIFT_AS") or "").upper()
+    me = canon((os.environ.get("COSHIFT_AS") or "").upper())
     if not me:
         return 0
     rl, cw = d.get("rate_limits") or {}, d.get("context_window") or {}
@@ -1301,6 +1354,26 @@ def cli(argv):
             "claimed": sum(t["status"] == "claimed" for _, t in tasks),
             "open": sum(t["status"] == "open" for _, t in tasks),
             "stop_5h": st["stop_5h"], "stop_week": st["stop_week"]}))
+    elif cmd == "status-json":
+        # what `coshift status` draws: this folder's project, accounts with activity, its tasks
+        boards = list(each_board())
+        with board() as b:
+            here, st = CURRENT or MAIN, settings_of(b)
+            def brief(t):
+                n = next((x for x in reversed(t.get("notes", [])) if not x["text"].startswith("QUESTION")), None)
+                return {"id": t["id"], "title": t["title"], "status": t["status"], "owner": t.get("owner", ""),
+                        "age_min": int((now() - t.get("updated", now())) // 60), "files": t.get("files", []),
+                        "ask": (t.get("needs_input") or {}).get("q", ""), "blocked": blockers(b, t) if t["status"] == "open" else [],
+                        "stale": t["status"] == "claimed" and now() - last_seen(b, t) > STALE_CLAIM_MIN * 60,
+                        "note": n and {"by": n["by"], "text": n["text"], "age_min": int((now() - n["t"]) // 60)}}
+            tasks = [brief(t) for t in b["tasks"] if t["status"] in ("claimed", "open")]
+            tasks += [brief(t) for t in b["tasks"] if t["status"] == "done"][-5:]
+            act = activity(boards)
+            accts = [dict(a, **act.get(a["name"].upper(), {"sessions": 0, "last_min": None, "quiet": 0})) for a in tray_accounts(b)]
+        print(json.dumps({"project": here, "projects": [p["name"] for p in project_summaries(boards)],
+                          "stop_5h": st["stop_5h"], "stop_week": st["stop_week"], "accounts": accts, "tasks": tasks}))
+    elif cmd == "rename-account" and len(argv) == 3:
+        print(rename_account(argv[1], argv[2]))
     elif cmd == "projects":
         if argv[1:2] == ["add"]:
             print(f"Project {add_project(argv[2] if len(argv) > 2 else repo_name(CWD))} created. Sessions in a repo "

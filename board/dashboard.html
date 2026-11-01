@@ -100,6 +100,8 @@ label { font-size: 13px; color: var(--muted); }
 .big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; line-height: 1; }
 .big small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
 .acct .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.rename { border: 0; background: none; padding: 0 4px; font-size: 13px; color: var(--muted); opacity: .6; }
+.rename:hover { opacity: 1; color: var(--accent); }
 .acct .mid { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .thin { height: 5px; margin-top: 10px; }
 .foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
@@ -391,7 +393,8 @@ function render(s) {
     const ctx = ss.filter(x => x.context_pct != null).map(x => `<span class="${x.context_pct >= s.stop_context ? "stop" : x.context_pct >= s.stop_context - 15 ? "warn" : ""}">${x.context_pct}%</span>`).join(" ");
     const saved = (s.contexts || {})[u.email] || (s.contexts || {})[u.profile];
     return `<div class="card acct">
-      <div class="head"><span class="who"><span class="dot" style="background:${render.color(n)}"></span>${label}</span>${status}</div>
+      <div class="head"><span class="who"><span class="dot" style="background:${render.color(n)}"></span>${label}
+        ${u.email ? `<button class="rename" data-act="rename" data-id="${esc(u.email)}" title="Rename this account everywhere" aria-label="Rename ${esc(u.email)}">✎</button>` : ""}</span>${status}</div>
       <div class="mid"><div class="big" style="color:${col(u.five_hour_pct, s.stop_5h)}">${u.five_hour_pct}%<small>5-hour</small></div>
         <div class="muted" style="text-align:right">${u.five_hour_resets ? "resets in " + esc(u.five_hour_resets) : ""}</div></div>
       <div class="track thin"><div class="fill" style="width:${Math.min(u.five_hour_pct, 100)}%;background:${col(u.five_hour_pct, s.stop_5h)}"></div><div class="mark" style="left:${s.stop_5h}%"></div></div>
@@ -500,6 +503,9 @@ document.addEventListener("click", async e => {
     if (text && text.trim()) post(`/api/task/${b.dataset.id}/answer`, { text });
   } else if (b.dataset.act === "reopen") {
     post(`/api/task/${b.dataset.id}/reopen`);
+  } else if (b.dataset.act === "rename") {
+    const now = prompt(`New name for ${b.dataset.id} (letters, digits, - or _). It changes everywhere, history included; its token and cloud variables keep working.`);
+    if (now && now.trim()) post("/api/accounts/rename", { old: b.dataset.id, new: now.trim() });
   } else if (b.dataset.act === "hidesetup") {
     try { localStorage.setItem("coshiftSetupHidden", String((last && JSON.parse(last).setup || []).filter(x => !x.done && !x.optional).length)); } catch (e) {}
     $("setupSteps").hidden = true;

@@ -47,6 +47,7 @@ Each account gets its own Claude Code profile folder (`~/.coshift/accounts/NAME`
 | `coshift run [NAME] [claude args]` | Starts Claude Code as NAME. Without a name: the account mapped to this folder, else the one with the most limit left. Extra arguments go to Claude Code (`coshift run ATLAS --resume`). |
 | `coshift map NAME` / `coshift map remove` | Ties the current folder (and its subfolders) to an account. |
 | `coshift accounts` | Live 5-hour and weekly limits, context window and sign-in of every account. |
+| `coshift account rename OLD NEW` | Renames an account everywhere: on every project board (limits, tasks, notes, messages, guidance, saved context) and in this computer's files, including its Claude Code profile and the menu bar label. The board remembers the old name, so the account's existing token, cloud variables and `COSHIFT_AS` keep working; nothing to re-paste or redeploy. The ✎ next to an account on the board page does the same for the board; on other computers, run the command once to update their files too. |
 
 Accounts you only use in the cloud don't need `login`; their limits come from their sessions.
 
@@ -155,7 +156,7 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `coshift setup` | Guided setup |
 | `coshift demo [port]` | The page with made-up data |
 | `coshift accounts` / `login` / `run` / `map` | See [Accounts](#accounts) |
-| `coshift status` | Sessions and tasks in the terminal (this folder's project) |
+| `coshift status [--full]` | One screen: every account's limits and activity, then this folder's project's tasks with their latest note shortened; `--full` prints every note |
 | `coshift project [add [NAME]]` | List projects, or give this repo its own board |
 | `coshift open` | Open the board page |
 | `coshift env NAME` / `coshift env admin` | An account's cloud variables / the page key, copied to the clipboard |

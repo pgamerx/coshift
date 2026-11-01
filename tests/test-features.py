@@ -175,6 +175,32 @@ check("warning when the app is signed in as FORGE but labelled ATLAS",
       "signed in as FORGE" in B.account_mismatch() and "calls this profile ATLAS" in B.account_mismatch(), B.account_mismatch())
 B.REMOTE = {}
 
+# ---- renaming an account: everywhere, every project, and the old name keeps working ----
+B.PROJECT = ""
+as_("OLDNAME", "on1", "report_usage", five_hour_pct=7, weekly_pct=7)
+txt, _ = as_("OLDNAME", "on1", "add_task", title="renamed owner's task")
+rid = int(txt.split("#")[1].split(":")[0])
+as_("OLDNAME", "on1", "claim_task", id=rid)
+as_("OLDNAME", "on1", "add_note", id=rid, text="halfway")
+with B.board(write=True) as b:
+    b["messages"].append({"t": B.now(), "to": "OLDNAME", "text": "hi", "read_by": []})
+B.rename_account("oldname", "newname")
+with B.board() as b:
+    t = B.find(b, rid)
+    check("rename rewrites usage, owner, notes and messages", "NEWNAME" in b["usage"] and "OLDNAME" not in b["usage"]
+          and t["owner"] == "NEWNAME" and t["notes"][-1]["by"] == "NEWNAME"
+          and any(m["to"] == "NEWNAME" for m in b["messages"]), (t["owner"], list(b["usage"])))
+txt, err = as_("OLDNAME", "on1", "claim_task")  # a session still configured with the old name
+check("a session using the old name works as the new one", not err and f"#{rid}" in txt and B.ME == "NEWNAME", txt[:120])
+check("repeating a finished rename is a no-op (a computer catching up)", B.rename_account("OLDNAME", "NEWNAME") == "NEWNAME")
+B.rename_account("NEWNAME", "THIRD")
+check("renaming again sends the oldest name straight to the newest", B.canon("OLDNAME") == "THIRD" and B.canon("NEWNAME") == "THIRD")
+try:
+    B.rename_account("THIRD", "X1")  # X1 is an existing account from an earlier section
+    check("renaming onto an existing account is refused", False)
+except ValueError:
+    check("renaming onto an existing account is refused", True)
+
 # ---- context window changes apply to stored token counts at once; 1M / 200K accepted ----
 B.PROJECT = ""
 as_("CW", "cw1", "report_usage", five_hour_pct=5, weekly_pct=5)

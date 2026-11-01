@@ -94,7 +94,7 @@ class handler(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         for tok, name in TOKENS.items():
             if got and hmac.compare_digest(got, tok):
-                return name
+                return name if name == "admin" else B.canon(name)  # a renamed account keeps its token
         return None
 
     def body(self):

@@ -309,6 +309,52 @@ async function setup(args) {
   console.log();
 }
 
+// Renames an account on the board (every project, all history) and in this computer's files. The board keeps
+// old -> new, so the old token, cloud variables and env vars keep working; nothing to re-paste or redeploy.
+function renameAccount(oldName, newName) {
+  if (!oldName || !newName) die("usage: coshift account rename OLD NEW");
+  const o = oldName.toUpperCase(), n = newName.toUpperCase();
+  const known = knownAccounts().map((x) => x.toUpperCase());
+  if (known.length && !known.includes(o)) die(`No account ${o} here. Accounts: ${known.join(", ")}`);
+  const r = pyOut(BOARD, ["rename-account", o, n]);
+  if (r.code) die(r.err.split("\n").pop() || r.out);
+  good(`Board: ${o} is now ${n} on every project, history included`);
+  const swap = (v) => (typeof v === "string" && v.toUpperCase() === o ? n : v);
+  const t = tokens();
+  if (t[o]) { t[n] = t[o]; delete t[o]; fs.writeFileSync(path.join(HOME, "tokens.json"), JSON.stringify(t, null, 2), { mode: 0o600 }); }
+  const rm = remote();
+  if (Object.keys(rm).length) {
+    if (rm.names) rm.names = rm.names.map(swap);
+    for (const k of Object.keys(rm.accounts || {})) rm.accounts[k] = swap(rm.accounts[k]);
+    fs.writeFileSync(path.join(HOME, "remote.json"), JSON.stringify(rm, null, 2), { mode: 0o600 });
+  }
+  const maps = readJson(MAPS, null);
+  if (maps) { for (const k of Object.keys(maps)) maps[k] = swap(maps[k]); fs.writeFileSync(MAPS, JSON.stringify(maps, null, 2)); }
+  if (fs.existsSync(acctDir(o)) && !fs.existsSync(acctDir(n))) {  // its own Claude Code sign-in moves with it
+    fs.renameSync(acctDir(o), acctDir(n));
+    const sp = path.join(acctDir(n), "settings.json"), st = readJson(sp, null);
+    if (st?.statusLine?.command?.includes("coshift statusline")) {
+      st.statusLine.command = `coshift statusline ${n}`;
+      fs.writeFileSync(sp, JSON.stringify(st, null, 2));
+    }
+  }
+  // macOS switcher label: keep it matching, or the account mix-up check would warn
+  const np = process.env.CLAUDE_SWITCH_MENU_NAMES || path.join(os.homedir(), "Library", "Application Support", "ClaudeSwitchMenu", "names.json");
+  const labels = readJson(np, null);
+  if (labels) {
+    let changed = false;
+    for (const [k, v] of Object.entries(labels)) {
+      const label = typeof v === "string" ? v : v?.name;
+      if (k.startsWith("@") || !label || label.toUpperCase() !== o) continue;
+      const shown = label === label.toUpperCase() ? n : n[0] + n.slice(1).toLowerCase();  // keep its style: FORGE / Forge
+      if (typeof v === "string") labels[k] = shown; else v.name = shown;
+      changed = true;
+    }
+    if (changed) { fs.writeFileSync(np, JSON.stringify(labels, null, 2), { mode: 0o600 }); good("Menu bar label updated"); }
+  }
+  good(`This computer's files updated. ${o}'s token and cloud variables keep working as ${n}.`);
+}
+
 // ---------- other commands ----------
 const HOOK_CMD = 'sh "$CLAUDE_PROJECT_DIR/.claude/hooks/board-context.sh"';
 function hookInstall(dir = process.cwd()) {
@@ -389,7 +435,8 @@ async function config(args) {
 
 async function account(args) {
   const [action, name] = args;
-  if (!["add", "rotate"].includes(action) || !name) die("usage: coshift account add|rotate NAME");
+  if (action === "rename") return renameAccount(name, args[2]);
+  if (!["add", "rotate"].includes(action) || !name) die("usage: coshift account add|rotate NAME  |  coshift account rename OLD NEW");
   if (mode() !== "vercel") die("accounts with tokens are for a Vercel board. For a local board, run coshift setup.");
   syncApp();
   const r = pyOut(path.join(APP, "scripts", "setup.py"), [`--${action}`, name, "--json"], { cwd: APP });
@@ -591,6 +638,47 @@ function bar(pct, stop) {
   return col("█".repeat(fill)) + c.dim("░".repeat(12 - fill)) + " " + String(Math.round(pct)).padStart(3) + "%";
 }
 
+// One screen: accounts (limits + whether their sessions work), then this folder's project's tasks, one line each,
+// with the latest note shortened to fit. --full prints everything the board has (every note in full).
+function status(args) {
+  if (args.includes("--full")) return process.exit(py(BOARD, ["show"]));
+  const r = pyOut(BOARD, ["status-json"]);
+  let s;
+  try { s = JSON.parse(r.out); } catch { die(r.err.split("\n").pop() || "couldn't read the board"); }
+  const W = Math.max(60, Math.min(process.stdout.columns || 100, 140));
+  const fit = (t, n) => (t.length > n ? t.slice(0, Math.max(0, n - 1)) + "…" : t);
+  const ago = (m) => (m == null ? "" : m < 1 ? "just now" : m < 120 ? `${m}m ago` : m < 2880 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`);
+  banner(`status · ${s.project === "default" ? "main board" : s.project}`);
+  for (const a of s.accounts) {
+    const act = a.sessions ? `${a.sessions} session${a.sessions > 1 ? "s" : ""} · last action ${ago(a.last_min)}` : "no session in 3h";
+    console.log(`  ${c.bold(a.name.padEnd(10))}${bar(a.five_hour_pct, s.stop_5h)}   ${bar(a.weekly_pct, s.stop_week)}   ${c.dim(act)}`
+      + (a.quiet ? c.yellow(` · ${a.quiet} quiet`) : "") + (a.stop ? c.yellow("  at stop line") : ""));
+  }
+  const section = (title, list, line) => {
+    if (!list.length) return;
+    console.log(`\n  ${c.dim(title + "  " + list.length)}`);
+    list.forEach(line);
+  };
+  const by = (st) => s.tasks.filter((t) => t.status === st);
+  const asks = s.tasks.filter((t) => t.ask);
+  section("NEEDS YOU", asks, (t) => console.log(`  ${c.yellow("#" + t.id)}  ${fit(t.title, W - 12)}\n       ${c.yellow("?")} ${fit(t.ask, W - 10)}`));
+  section("IN PROGRESS", by("claimed"), (t) => {
+    const who = `${t.owner} · ${ago(t.age_min)}` + (t.stale ? " · quiet" : "");
+    console.log(`  ${c.orange(("#" + t.id).padEnd(5))}${fit(t.title, W - who.length - 12).padEnd(W - who.length - 11)} ${c.dim(who)}`);
+    if (t.note) {
+      const text = t.note.text.replace(/\s+/g, " ").replace(new RegExp(`^${t.note.by}:\\s*`), "");  // "FORGE: FORGE: …"
+      console.log(`       ${c.dim(fit(`${t.note.by}: ${text}`, W - 9))}`);
+    }
+  });
+  section("QUEUE", by("open"), (t) => console.log(`  ${c.dim(("#" + t.id).padEnd(5))}${fit(t.title, W - 9)}`
+    + (t.blocked.length ? `\n       ${c.dim("waits: " + fit(t.blocked.join("; "), W - 16))}` : "")));
+  section("RECENTLY DONE", by("done"), (t) => console.log(`  ${c.green("✓")}    ${c.dim(fit(t.title, W - 9))}`));
+  if (!s.tasks.length) info("No tasks yet. Tell a session: Use the Coshift board: split <goal> into tasks, then claim one.");
+  const others = s.projects.filter((p) => p !== s.project);
+  console.log(`\n  ${c.dim("Every note:")} ${c.cyan("coshift status --full")}   ${c.dim("Board:")} ${c.cyan("coshift open")}`
+    + (others.length ? `   ${c.dim("Other projects:")} ${others.map((p) => (p === "default" ? "main board" : p)).join(", ")}` : "") + "\n");
+}
+
 function accounts() {
   banner("accounts");
   const names = knownAccounts();
@@ -708,6 +796,7 @@ async function shell() {
       { label: "Projects", value: "projects", hint: "list them, or give this repo its own board" },
       { label: "Open the board page", value: "open" },
       { label: "Settings", value: "config", hint: "stop lines, context windows, phone alerts" },
+      { label: "Rename an account", value: "rename", hint: "everywhere; its token keeps working" },
       ...(mode() === "vercel" ? [
         { label: "Cloud variables for an account", value: "env", hint: "copy to claude.ai/code" },
         { label: "Add the context hook to a repo", value: "hook", hint: "cloud sessions report their context" },
@@ -732,6 +821,15 @@ async function shell() {
     if (pick === "run") runAs([]);
     if (pick === "open") py(BOARD, ["web", "--open"]);
     if (pick === "config") await config([]);
+    if (pick === "rename") {
+      const names = knownAccounts();
+      if (!names.length) info("No accounts yet.");
+      else {
+        const old = await select("Rename which account?", names.map((n) => ({ label: n, value: n })));
+        const now = await input(`New name for ${old}`);
+        if (now) renameAccount(old, now);
+      }
+    }
     if (pick === "doctor") doctor();
     if (pick === "tray") await tray(await select(process.platform === "darwin" ? "Menu bar app" : "Tray icon",
       [{ label: "Install / restart", value: "install" }, { label: "Remove", value: "remove" }]));
@@ -753,26 +851,34 @@ async function shell() {
 
 const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accounts, one shared board per project
 
-  ${c.cyan("coshift")}                     interactive menu
-  ${c.cyan("coshift setup")}               guided setup (Vercel or this computer)
-  ${c.cyan("coshift demo [port]")}         try the board page with made-up data
-  ${c.cyan("coshift accounts")}            every account's live limits
-  ${c.cyan("coshift login NAME")}          add an account (its own Claude Code sign-in)
-  ${c.cyan("coshift run [NAME]")}          start Claude Code as NAME, or the one with most limit left
-  ${c.cyan("coshift map [NAME|remove]")}   tie this folder to an account
-  ${c.cyan("coshift status")}              sessions and tasks (this repo's project)
-  ${c.cyan("coshift project [add [NAME]]")} list projects / give this repo its own board
-  ${c.cyan("coshift open")}                open the board page
-  ${c.cyan("coshift env NAME|admin")}      an account's cloud variables (copied) / the page key
-  ${c.cyan("coshift config [k v [ACCT]]")} show or change settings (stop lines, context windows, alerts)
-  ${c.cyan("coshift account add|rotate N")} add an account or give one a new token
-  ${c.cyan("coshift pusher [remove]")}     send live usage to the board every minute
-  ${c.cyan("coshift tray [remove]")}       menu bar (macOS) / tray icon (Windows, Linux) with limits and alerts
-  ${c.cyan("coshift deploy")}              redeploy the board after upgrading
-  ${c.cyan("coshift doctor")}              check the whole setup
-  ${c.cyan("coshift hook install [DIR]")}  add the context hook to a repo (or print it: coshift hook)
-  ${c.cyan("coshift serve | web | call")}  board internals (MCP server, local page, tools)
-  ${c.cyan("coshift claude-switch ...")}   macOS: swap the Claude desktop app between accounts
+${c.dim("EVERY DAY")}
+  ${c.cyan("coshift")}                       interactive menu
+  ${c.cyan("coshift status [--full]")}       accounts and this repo's tasks at a glance
+  ${c.cyan("coshift run [NAME]")}            Claude Code as NAME, or the account with most limit left
+  ${c.cyan("coshift open")}                  the board page
+  ${c.cyan("coshift accounts")}              every account's limits, context window and sign-in
+
+${c.dim("ACCOUNTS")}
+  ${c.cyan("coshift login NAME")}            add an account (its own Claude Code sign-in)
+  ${c.cyan("coshift account rename A B")}    rename everywhere; its token keeps working
+  ${c.cyan("coshift account add|rotate N")}  add an account to a Vercel board / new token
+  ${c.cyan("coshift env NAME|admin")}        cloud variables for claude.ai/code (copied) / page key
+  ${c.cyan("coshift map [NAME|remove]")}     tie this folder to an account
+
+${c.dim("PROJECTS AND SETTINGS")}
+  ${c.cyan("coshift project [add [NAME]]")}  list projects / give this repo its own board
+  ${c.cyan("coshift config [k v [ACCT]]")}   stop lines, context windows, phone alerts
+  ${c.cyan("coshift hook install [DIR]")}    context hook for cloud sessions (print: coshift hook)
+
+${c.dim("SETUP AND UPKEEP")}
+  ${c.cyan("coshift setup")}                 guided setup (Vercel or this computer)
+  ${c.cyan("coshift doctor")}                check the whole setup
+  ${c.cyan("coshift deploy")}                update a Vercel board after upgrading
+  ${c.cyan("coshift pusher [remove]")}       send live limits every minute
+  ${c.cyan("coshift tray [remove]")}         menu bar (macOS) / tray icon (Windows, Linux)
+  ${c.cyan("coshift demo [port]")}           the board with made-up data
+  ${c.cyan("coshift claude-switch ...")}     macOS: swap the Claude desktop app between accounts
+  ${c.cyan("coshift serve | web | call")}    internals: MCP server, local page, tools
 
 Docs: ${c.cyan("https://github.com/pgamerx/coshift")}`;
 
@@ -784,7 +890,7 @@ async function main() {
     case "-v": case "--version": return console.log(VERSION);
     case "setup": return setup(rest);
     case "demo": return process.exit(py(path.join(PKG, "scripts", "demo.py"), rest));
-    case "status": return process.exit(py(BOARD, ["show"]));
+    case "status": return status(rest);
     case "accounts": return accounts();
     case "login": return login(rest[0]);
     case "run": return runAs(rest);
