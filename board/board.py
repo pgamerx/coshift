@@ -123,7 +123,8 @@ You are one of them; the others work in their own sessions. Follow this protocol
 11. A new session starts with resume: it returns your account's saved context summary and your tasks.
 12. When you add tasks, pass files (the paths each will edit) and depends_on (ids that must finish first).
    claim_task never gives you a task whose files another running task is editing, or whose dependencies
-   aren't done. Edit only the files of the task you own.
+   aren't done. Edit only the files of the task you own; need another file mid-task? update_task its files first
+   (refused while another running task owns that file).
 13. Blocked on a decision only the user can make? ask_user, then keep going on something else.
 14. Before starting a dev server or database, lease_port and use the ports it gives you.
 Work on your own git branch or worktree; never commit to another account's branch."""
@@ -615,7 +616,14 @@ def t_update_task(a):
                 t[k] = a[k].strip()
                 changed.append(k)
         if "files" in a:
-            t["files"] = _paths(a["files"])
+            files = _paths(a["files"])
+            if t["status"] == "claimed":  # a running task can't take files another running task is editing
+                for o in b["tasks"]:
+                    hit = o["id"] != t["id"] and o["status"] == "claimed" and paths_overlap(files, o.get("files", []))
+                    if hit:
+                        raise ValueError(f"#{o['id']} ({o['owner']}) is editing {hit[1]}. Wait for it to finish, "
+                                         "or work on files no running task owns.")
+            t["files"] = files
             changed.append("files")
         if "depends_on" in a:
             t["depends_on"] = _deps(b, a["depends_on"], t["id"])
@@ -853,6 +861,47 @@ def app_usage():
     return out
 
 
+def account_mismatch():
+    """A warning when the Claude desktop app is signed in as a different account than the switcher's label for the
+    profile in use: its usage would be shown, and its work handed over, under the wrong name. "" when they match."""
+    accounts = REMOTE.get("accounts", {})
+    try:
+        with open(os.path.join(PROFILES, ".active"), encoding="utf-8") as f:
+            active = f.read().strip()
+        switched = os.path.getmtime(os.path.join(PROFILES, ".active"))
+        with open(os.path.join(LIVE, "plan-usage-history.json"), encoding="utf-8") as f:
+            smp = json.load(f)["samples"][-1]
+        with open(NAMES, encoding="utf-8") as f:
+            label = json.load(f).get(active, active)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return ""
+    label = str(label.get("name", active) if isinstance(label, dict) else label)
+    real = accounts.get(smp.get("org"))
+    if not active or not real or smp.get("t", 0) / 1000 < switched:  # no sample since the last switch yet
+        return ""
+    if real.upper() != label.upper():
+        return (f"The Claude desktop app is signed in as {real}, but the switcher calls this profile {label}. "
+                f"Rename the profile, or sign in as {label}.")
+    return ""
+
+
+def activity(boards):
+    """Per account, across projects: sessions active in the last 3 hours, minutes since the newest action, and how many
+    hold a task but have been silent 15+ minutes (maybe stuck or waiting on you)."""
+    out = {}
+    for _, b in boards:
+        held = {t.get("session") for t in b["tasks"] if t["status"] == "claimed"}
+        for sid, sess in b["sessions"].items():
+            age = int((now() - sess.get("last", 0)) // 60)
+            if age > 180 or not sess.get("account"):
+                continue
+            a = out.setdefault(sess["account"].upper(), {"sessions": 0, "last_min": age, "quiet": 0})
+            a["sessions"] += 1
+            a["last_min"] = min(a["last_min"], age)
+            a["quiet"] += sid in held and age >= 15
+    return out
+
+
 def resets_in(t):
     m = max(0, int((t - now()) // 60))
     return f"{m // 1440}d {m % 1440 // 60}h" if m >= 1440 else f"{m // 60}h {m % 60}m"
@@ -908,9 +957,9 @@ def accounts_view(usage):
     return cards
 
 
-def project_summaries():
+def project_summaries(boards=None):
     out = []
-    for name, b in each_board():
+    for name, b in boards or each_board():
         ts = b["tasks"]
         out.append({"name": name or MAIN, "claimed": sum(t["status"] == "claimed" for t in ts),
                     "open": sum(t["status"] == "open" for t in ts), "needs": sum(bool(t.get("needs_input")) for t in ts)})
@@ -945,7 +994,9 @@ def setup_steps(b, sessions):
 
 def web_state():
     st = _web_state()
-    st["projects"] = project_summaries()  # after the board's lock is released: it reads every board
+    boards = list(each_board())  # after the board's lock is released: it reads every board
+    st["projects"] = project_summaries(boards)
+    st["activity"], st["mismatch"] = activity(boards), account_mismatch()
     return st
 
 
@@ -1117,10 +1168,10 @@ def web_running(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def web_open(port):
+def web_open(port, frag=""):
     """Opens the hosted board if remote.json names one; otherwise starts the local page if needed and opens it."""
     if REMOTE.get("url"):
-        return webbrowser.open(REMOTE["url"])
+        return webbrowser.open(REMOTE["url"] + frag)
     if not web_running(port):
         os.makedirs(HOME, mode=0o700, exist_ok=True)
         with open(os.path.join(HOME, "web.log"), "a") as log:
@@ -1130,7 +1181,7 @@ def web_open(port):
             if web_running(port):
                 break
             time.sleep(0.1)
-    webbrowser.open(f"http://127.0.0.1:{port}/")
+    webbrowser.open(f"http://127.0.0.1:{port}/{frag}")
 
 
 def push_usage():
@@ -1241,7 +1292,10 @@ def cli(argv):
         st = settings_of(b)
         print(json.dumps({
             "url": REMOTE.get("url") or f"http://127.0.0.1:{PORT}/",
-            "accounts": tray_accounts(b),
+            "accounts": [dict(a, **activity(boards).get(a["name"].upper(), {"sessions": 0, "last_min": None, "quiet": 0}))
+                         for a in tray_accounts(b)],
+            "mismatch": account_mismatch(),
+            "projects": [p for p in project_summaries(boards) if p["claimed"] or p["open"] or p["needs"]],
             "needs": [{"id": t["id"], "title": (f"[{p}] " if p else "") + t["title"], "by": t["needs_input"]["by"],
                        "q": t["needs_input"]["q"]} for p, t in tasks if t.get("needs_input")],
             "claimed": sum(t["status"] == "claimed" for _, t in tasks),
@@ -1286,7 +1340,7 @@ if __name__ == "__main__":
     elif sys.argv[1:2] == ["web"]:
         rest = sys.argv[2:]
         port = int(next((x for x in rest if x.isdigit()), PORT))
-        web_open(port) if "--open" in rest else web(port)
+        web_open(port, "#settings" if "--settings" in rest else "") if "--open" in rest else web(port)
     else:
         try:
             sys.exit(cli(sys.argv[1:]))

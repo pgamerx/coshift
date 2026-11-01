@@ -229,22 +229,50 @@ func setLaunchAtLogin(_ on: Bool) -> String? {
 
 // MARK: - Coshift (board status from `board.py tray-json`; nil when Coshift isn't set up)
 
-struct CoshiftAccount { let name: String; let fiveHour: Int?; let weekly: Int?; let stop: String }
+struct CoshiftAccount {
+    let name: String; let fiveHour: Int?; let weekly: Int?; let stop: String
+    var sessions = 0; var lastMin: Int? = nil; var quiet = 0  // sessions active in the last 3 hours, every project
+}
 struct CoshiftNeed { let id: Int; let title: String; let by: String; let question: String }
-struct CoshiftState { let accounts: [CoshiftAccount]; let needs: [CoshiftNeed] }
+struct CoshiftProject { let name: String; let claimed: Int; let open: Int; let needs: Int }
+struct CoshiftState {
+    let accounts: [CoshiftAccount]; let needs: [CoshiftNeed]
+    var projects: [CoshiftProject] = []; var mismatch = ""; var stop5h = 85; var stopWeek = 90
+}
 
 func parseCoshift(_ text: String) -> CoshiftState? {
     guard let d = text.data(using: .utf8),
           let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
     let accts = (j["accounts"] as? [[String: Any]] ?? []).map {
         CoshiftAccount(name: $0["name"] as? String ?? "?", fiveHour: $0["five_hour_pct"] as? Int,
-                       weekly: $0["weekly_pct"] as? Int, stop: $0["stop"] as? String ?? "")
+                       weekly: $0["weekly_pct"] as? Int, stop: $0["stop"] as? String ?? "",
+                       sessions: $0["sessions"] as? Int ?? 0, lastMin: $0["last_min"] as? Int, quiet: $0["quiet"] as? Int ?? 0)
+    }
+    let projects = (j["projects"] as? [[String: Any]] ?? []).map {
+        CoshiftProject(name: $0["name"] as? String ?? "?", claimed: $0["claimed"] as? Int ?? 0,
+                       open: $0["open"] as? Int ?? 0, needs: $0["needs"] as? Int ?? 0)
     }
     let needs = (j["needs"] as? [[String: Any]] ?? []).map {
         CoshiftNeed(id: $0["id"] as? Int ?? 0, title: $0["title"] as? String ?? "",
                     by: $0["by"] as? String ?? "", question: $0["q"] as? String ?? "")
     }
-    return CoshiftState(accounts: accts, needs: needs)
+    return CoshiftState(accounts: accts, needs: needs, projects: projects, mismatch: j["mismatch"] as? String ?? "",
+                        stop5h: j["stop_5h"] as? Int ?? 85, stopWeek: j["stop_week"] as? Int ?? 90)
+}
+
+/// "2 sessions · last action 3m ago · 1 quiet": whether an account is actually working, not just its limits.
+func activityText(_ a: CoshiftAccount) -> String {
+    guard a.sessions > 0, let m = a.lastMin else { return "no session in the last 3 hours" }
+    let ago = m < 1 ? "just now" : m < 120 ? "\(m)m ago" : "\(m / 60)h ago"
+    return "\(a.sessions) session\(a.sessions == 1 ? "" : "s") · last action \(ago)" + (a.quiet > 0 ? " · \(a.quiet) quiet 15m+" : "")
+}
+
+func projectsText(_ ps: [CoshiftProject]) -> String {
+    ps.map { p in
+        let bits = [p.claimed > 0 ? "\(p.claimed) working" : "", p.open > 0 ? "\(p.open) queued" : "",
+                    p.needs > 0 ? "\(p.needs) need you" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return "\(p.name == "default" ? "Main board" : p.name): \(bits)"
+    }.joined(separator: "\n")
 }
 
 /// Coshift account whose name matches a desktop profile's display name (e.g. profile "main" shown as ATLAS).
@@ -260,6 +288,7 @@ func limitsText(_ a: CoshiftAccount) -> String {
 func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) -> [MenuItemSpec] {
     guard let c = c else { return [spec("Open Coshift Board", "board", key: "b")] }
     var m = [spec("Coshift", "none", enabled: false)]
+    if !c.mismatch.isEmpty { m.append(spec("⚠︎ Account mix-up: \(c.mismatch)", "board")) }
     for a in c.accounts where !shown.contains(a.name.uppercased()) {  // profiles above already show theirs
         m.append(spec("\(a.name)   \(limitsText(a))", "run:\(a.name)", enabled: !switching))
     }
@@ -269,7 +298,53 @@ func coshiftItems(_ c: CoshiftState?, switching: Bool, shown: Set<String> = []) 
     }
     m.append(spec("Start Claude Code (most limit left)", "run:", enabled: !switching, key: "n"))
     m.append(spec("Open Coshift Board", "board", key: "b"))
+    m.append(spec("Coshift Settings...", "settings", key: ","))
     return m
+}
+
+/// The panel at the top of the menu: each account's 5-hour and weekly bars (yellow 15 points before its stop line,
+/// red at it), whether its sessions are active, and the projects with work. Read-only; actions are the items below.
+func coshiftPanel(_ c: CoshiftState) -> NSView {
+    let stack = NSStackView()
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = 4
+    stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
+    func label(_ s: String, size: CGFloat = 11, bold: Bool = false, color: NSColor = .secondaryLabelColor) -> NSTextField {
+        let l = NSTextField(labelWithString: s)
+        l.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
+        l.textColor = color
+        return l
+    }
+    func bar(_ title: String, _ v: Int?, stop: Int) -> NSView {
+        let ind = NSLevelIndicator()
+        ind.levelIndicatorStyle = .continuousCapacity
+        ind.maxValue = 100
+        ind.warningValue = Double(stop - 15)
+        ind.criticalValue = Double(stop)
+        ind.doubleValue = Double(v ?? 0)
+        ind.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        let t = label(title), pct = label(v.map { "\($0)%" } ?? "?", color: .labelColor)
+        t.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        let row = NSStackView(views: [t, ind, pct])
+        row.spacing = 6
+        return row
+    }
+    for (i, a) in c.accounts.enumerated() {
+        if i > 0 { stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!) }
+        stack.addArrangedSubview(label(a.name + (a.stop.isEmpty ? "" : "  · at stop line"), size: 13, bold: true,
+                                       color: a.stop.isEmpty ? .labelColor : .systemOrange))
+        stack.addArrangedSubview(bar("5h", a.fiveHour, stop: c.stop5h))
+        stack.addArrangedSubview(bar("wk", a.weekly, stop: c.stopWeek))
+        stack.addArrangedSubview(label(activityText(a), color: a.quiet > 0 ? .systemOrange : .secondaryLabelColor))
+    }
+    if !c.projects.isEmpty {
+        stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!)
+        stack.addArrangedSubview(label(projectsText(c.projects)))
+    }
+    stack.layoutSubtreeIfNeeded()
+    stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+    return stack
 }
 
 func buildMenu(active: String?, profiles: [Profile], switching: Bool, names: [String: NameEntry],
@@ -508,6 +583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var sideBySide = false         // a second window is open (from `claude-switch status`)
     var coshift: CoshiftState?     // board status, refreshed with the rest
     var seenNeeds: Set<Int>?       // questions already notified (nil until the first load, so old ones don't ping)
+    var lastMismatch = ""          // the account mix-up already notified
 
     func applicationDidFinishLaunching(_ n: Notification) {
         menu.delegate = self
@@ -545,6 +621,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
                 self.seenNeeds = ids
+                if let mm = cs?.mismatch, !mm.isEmpty, mm != self.lastMismatch { notify(title: "Account mix-up", message: mm) }
+                self.lastMismatch = cs?.mismatch ?? ""
                 self.render()
             }
         }
@@ -591,6 +669,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             mi.state = spec.checked ? .on : .off
             menu.addItem(mi)
         }
+        if let c = coshift, !c.accounts.isEmpty {
+            let panel = NSMenuItem()
+            panel.view = coshiftPanel(c)
+            menu.insertItem(panel, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
     }
 
     @objc func clicked(_ sender: NSMenuItem) {
@@ -601,6 +685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "toggle": startSwitch(["toggle"])
         case "rename": rename()
         case "board": openBoard()
+        case "settings": openBoard(settings: true)
         case "login": toggleLaunchAtLogin()
         case "showname": toggleShowName()
         case "noop": break
@@ -634,12 +719,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Starts the Coshift board page if needed and opens it in the browser. Never touches profiles.
-    func openBoard() {
+    func openBoard(settings: Bool = false) {
         let script = ProcessInfo.processInfo.environment["COSHIFT_PY"]
             ?? (NSHomeDirectory() + "/.coshift/board.py")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        p.arguments = [script, "web", "--open"]
+        p.arguments = [script, "web", "--open"] + (settings ? ["--settings"] : [])
         p.terminationHandler = { proc in
             if proc.terminationStatus != 0 {
                 notify(title: "Claude Switch Menu", message: "Could not open the Coshift board (\(script))")
@@ -840,6 +925,16 @@ func renderPNG(to path: String) {
 
 if let i = CommandLine.arguments.firstIndex(of: "--render-png"), i + 1 < CommandLine.arguments.count {
     renderPNG(to: CommandLine.arguments[i + 1])
+} else if let i = CommandLine.arguments.firstIndex(of: "--render-panel"), i + 1 < CommandLine.arguments.count {
+    // the Coshift panel from tray JSON on stdin, drawn to a PNG (checks the layout without opening the menu)
+    let json = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard let c = parseCoshift(json) else { print("bad tray JSON"); exit(1) }
+    let v = coshiftPanel(c)
+    v.appearance = NSAppearance(named: CommandLine.arguments.contains("--dark") ? .darkAqua : .aqua)
+    let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds)!
+    v.cacheDisplay(in: v.bounds, to: rep)
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+    print("wrote \(CommandLine.arguments[i + 1]) \(Int(v.bounds.width))x\(Int(v.bounds.height))")
 } else if CommandLine.arguments.contains("--print-menu") {
     printMenu()
 } else if CommandLine.arguments.contains("--selftest") {

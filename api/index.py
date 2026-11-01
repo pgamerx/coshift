@@ -52,7 +52,8 @@ CONTEXT: a hook reports how full your context window is. At """ + str(B.STOP_CON
    No hook yet in this repo? Install it: see GET $COSHIFT_URL/api/hook.
 FILES AND ORDER: when you add tasks, pass "files" (paths/globs each task edits) and "depends_on" (ids that
    must finish first). claim_task never hands you a task whose files another running task is editing or whose
-   dependencies aren't done. Edit only your task's files.
+   dependencies aren't done. Edit only your task's files. Need another file mid-task? update_task {"id": N,
+   "files": [...]} first; it's refused while another running task owns that file.
 ASK, DON'T STALL: blocked on a decision only the user can make? ask_user {"id": N, "question": "..."}, then keep
    working on something else; the answer arrives as MESSAGE FROM THE USER.
 PORTS: before starting a dev server or database, lease_port and use the ports it gives you.

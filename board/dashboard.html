@@ -50,7 +50,8 @@ h2 .scope { text-transform: none; letter-spacing: 0; font-weight: 500; font-size
 .scoped { border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 0 0 14px 14px; padding: 0 16px 18px;
           background: color-mix(in srgb, var(--surface) 35%, transparent); }
 .scoped > h2:first-of-type, .scoped > #needs + h2 { margin-top: 18px; }
-#settingsPanel, #setupSteps { margin-top: 16px; }
+#settingsPanel, #setupSteps, #mismatch { margin-top: 16px; }
+.warnbox { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
 .step { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
 .step:first-of-type { border-top: 0; }
 .step .tick { width: 22px; height: 22px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 12px;
@@ -176,6 +177,7 @@ footer { margin-top: 36px; text-align: center; }
     <div class="row" style="justify-content:flex-end"><button id="ssave" class="primary">Save settings</button></div>
   </section>
 
+  <div id="mismatch" class="card warnbox" hidden></div>
   <div id="setupSteps" class="card" hidden></div>
 
   <h2>Accounts <span class="scope">shared by every project</span></h2>
@@ -372,6 +374,8 @@ function render(s) {
   const accts = Object.entries(s.usage);
   renderProjects(s);
   renderSetup(s);
+  $("mismatch").hidden = !s.mismatch;
+  $("mismatch").innerHTML = s.mismatch ? `<b>Account mix-up:</b> ${esc(s.mismatch)}` : "";
   if (!render.done) { $("setup").open = s.sessions.length === 0 && s.tasks.length === 0; render.done = true; }
   const PALETTE = ["#d97757", "#5b8def", "#3fa37a", "#a970d8", "#d6649b", "#2fa3b3"];
   const keyOf = u => (u.email || u.profile || "").toUpperCase();
@@ -383,6 +387,7 @@ function render(s) {
     const label = esc(u.profile && u.email && u.profile.toUpperCase() !== u.email.toUpperCase() ? `${u.profile} · ${u.email}` : (u.email || u.profile));
     const status = u.stop ? `<span class="pill stop" title="past the stop line: its sessions hand over and take no new tasks">At stop line</span>` : `<span class="pill ok" title="under the stop lines">Has room</span>`;
     const ss = s.sessions.filter(x => (x.account || "").toUpperCase() === n);
+    const act = (s.activity || {})[n] || { sessions: 0 };  // every project, not just this one
     const ctx = ss.filter(x => x.context_pct != null).map(x => `<span class="${x.context_pct >= s.stop_context ? "stop" : x.context_pct >= s.stop_context - 15 ? "warn" : ""}">${x.context_pct}%</span>`).join(" ");
     const saved = (s.contexts || {})[u.email] || (s.contexts || {})[u.profile];
     return `<div class="card acct">
@@ -392,8 +397,10 @@ function render(s) {
       <div class="track thin"><div class="fill" style="width:${Math.min(u.five_hour_pct, 100)}%;background:${col(u.five_hour_pct, s.stop_5h)}"></div><div class="mark" style="left:${s.stop_5h}%"></div></div>
       <div class="meter"><div class="lbl"><span>Weekly</span><span><b>${u.weekly_pct}%</b>${u.weekly_resets ? ` · ${esc(u.weekly_resets)}` : ""}</span></div>
         <div class="track thin" style="margin-top:5px"><div class="fill" style="width:${Math.min(u.weekly_pct, 100)}%;background:${col(u.weekly_pct, s.stop_week)}"></div><div class="mark" style="left:${s.stop_week}%"></div></div></div>
-      <div class="foot"><span>${ss.length ? `${ss.length} session${ss.length > 1 ? "s" : ""}${ctx ? " · context " + ctx : ""}` : "no session on the board"}</span>
-        <span title="last update">${ago(u.age_min)}${u.age_min > 30 ? ' <span class="warn">· old</span>' : ""}</span></div>
+      <div class="foot"><span>${act.sessions ? `${act.sessions} session${act.sessions > 1 ? "s" : ""} · last action ${ago(act.last_min)}`
+          + (act.quiet ? ` · <span class="warn" title="holding a task but silent 15+ minutes: stuck, or waiting on you?">${act.quiet} quiet</span>` : "")
+          : "no session in the last 3 hours"}${ctx ? " · context " + ctx : ""}</span>
+        <span title="when these limits were last updated">limits ${ago(u.age_min)}${u.age_min > 30 ? ' <span class="warn">· old</span>' : ""}</span></div>
       ${saved ? `<details style="margin-top:8px"><summary>Saved context · ${since(saved.t)}</summary>
         <div class="muted" style="white-space:pre-wrap;margin-top:4px">${esc(saved.text)}</div></details>` : ""}</div>`;
   }).join("") : `<div class="card muted">No usage yet. It appears once a session (or the usage pusher) reports in.</div>`;
@@ -558,6 +565,7 @@ async function newProject() {
   if (r.ok) switchProject(typed.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, ""));
 }
 
+if (location.hash === "#settings") showSettings(true);  // the menu bar's "Coshift Settings..."
 load(true);
 setInterval(load, 5000);
 </script>

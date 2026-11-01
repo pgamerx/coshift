@@ -55,13 +55,17 @@ Accounts you only use in the cloud don't need `login`; their limits come from th
 Sessions follow a protocol the board gives them when they connect:
 
 - **Claim, don't overlap.** `claim_task` hands out the next open task. Claims are atomic: two sessions never get the same task, even at the same moment.
-- **Own your files.** Tasks list the paths they edit (`src/auth/`, `*.css`). A task whose files overlap a running task isn't handed out until that one finishes.
+- **Own your files.** Tasks list the paths they edit (`src/auth/`, `*.css`). A task whose files overlap a running task isn't handed out until that one finishes. A session that needs another file mid-task adds it with `update_task` first, and that's refused while another running task owns the file, so overlapping work always waits.
 - **Order.** Tasks can depend on others (`depends_on`); they wait until those are done.
 - **Notes as you go.** Every task keeps its notes: done so far, next step, files, branch.
 - **Ask, don't stall.** A session blocked on a decision calls `ask_user`. It's highlighted at the top of the page (and pushed to your phone if alerts are on); your answer reaches that session on its next board call.
 - **Ports.** Before starting a dev server or database, a session calls `lease_port` and gets its own port range, so parallel servers don't collide.
 - **Stop lines.** Near the 5-hour or weekly stop line, a session finishes its small step and releases its task with a full handover.
 - **Dead sessions free their claims.** A claim is free for another account once the session holding it has gone silent past the stale time (45 minutes by default). A busy session never loses its claim.
+
+**Is it actually working?** "At stop line" only means an account's limits are past your stop line. Whether its sessions are working shows separately, on the board's account cards and in the menu bar: how many sessions were active in the last 3 hours, when the last one did something, and how many hold a task but have gone quiet for 15+ minutes (stuck, or waiting on you).
+
+**Account mix-ups (macOS).** If the Claude desktop app is signed in as a different account than the switcher's name for the profile in use, its usage would be reported, and its work handed over, under the wrong name. The board and the menu bar warn you when that happens.
 
 From the page you can add tasks (with files and order), answer questions, add notes, reopen or cancel tasks (cancelled tasks are kept, just hidden), send a one-off message to one account or all, and write **guidance**: standing rules every session sees with each board check until you remove them. Add `?theme=light` or `?theme=dark` to the page's address to force a theme.
 
@@ -137,7 +141,7 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 
 `coshift tray` installs the right one for your system and starts it at login:
 
-- **macOS:** the menu bar app shows the active account's limits in the bar (`ATLAS 72% · 41%`), every account's 5-hour and weekly limits in the menu, starts Claude Code as an account in Terminal, opens the board, and notifies you when a session asks something. It's built on your Mac (needs Apple's command line tools: `xcode-select --install`). Turn on **Launch at Login** in its menu.
+- **macOS:** the menu bar app shows the active account's limits in the bar (`ATLAS 72% · 41%`). Its menu opens on a panel with every account's 5-hour and weekly bars (yellow 15 points before your stop line, red at it), whether its sessions are working (`2 sessions · last action 3m ago`, and how many hold a task but have been quiet for 15+ minutes), and the projects with work. Below that it starts Claude Code as an account in Terminal, opens the board or its settings (**Coshift Settings…**, ⌘,), and notifies you when a session asks something or when the desktop app is signed in as a different account than its profile's name. It's built on your Mac (needs Apple's command line tools: `xcode-select --install`). Turn on **Launch at Login** in its menu.
 - **Windows:** an icon in the notification area. Hover for limits; click for the same menu; a pop-up when a session needs you. Built with Windows PowerShell, nothing to install.
 - **Linux:** a panel icon on desktops with AppIndicator support (KDE, Cinnamon, XFCE, Ubuntu; plain GNOME needs the AppIndicator extension), otherwise desktop notifications.
 

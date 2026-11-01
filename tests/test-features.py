@@ -134,6 +134,47 @@ check("five accounts each get a different task", len(set(got.values())) == 5, go
 txt, _ = as_("FIVE", "s5-FIVE", "board_status")
 check("status lists all five accounts", all(f"{n}: 5h" in txt for n in five), txt[:300])
 
+# ---- a running task can't take files another running task owns ----
+B.PROJECT = ""
+for who in ("X1", "X2"):
+    as_(who, who.lower(), "report_usage", five_hour_pct=5, weekly_pct=5)
+txt, _ = as_("X1", "x1", "add_task", title="api work", files=["svc/api/"])
+api_id = int(txt.split("#")[1].split(":")[0])
+txt, _ = as_("X2", "x2", "add_task", title="ui work", files=["svc/ui/"])
+ui_id = int(txt.split("#")[1].split(":")[0])
+as_("X1", "x1", "claim_task", id=api_id)
+as_("X2", "x2", "claim_task", id=ui_id)
+txt, err = as_("X2", "x2", "update_task", id=ui_id, files=["svc/ui/", "svc/api/client.ts"])
+check("adding a file another running task owns is refused", err and f"#{api_id} (X1) is editing" in txt, txt)
+txt, err = as_("X2", "x2", "update_task", id=ui_id, files=["svc/ui/", "svc/shared/"])
+check("adding a free file works", not err, txt)
+
+# ---- activity per account, across projects ----
+with B.board(write=True) as b:
+    b["sessions"]["x2"]["last"] = B.now() - 20 * 60  # X2 holds a task but has been silent 20 minutes
+act = B.activity(list(B.each_board()))
+check("activity counts sessions and flags a silent one holding a task",
+      act["X1"]["sessions"] >= 1 and act["X2"]["quiet"] == 1 and act["X2"]["last_min"] >= 20, act.get("X2"))
+
+# ---- account mix-up: the desktop app signed in as another account than the profile's label ----
+prof, live = os.path.join(HOME, "profiles"), os.path.join(HOME, "live")
+os.makedirs(prof, exist_ok=True); os.makedirs(live, exist_ok=True)
+B.PROFILES, B.LIVE, B.NAMES = prof, live, os.path.join(HOME, "names.json")
+B.REMOTE = {"accounts": {"org-a": "ATLAS", "org-f": "FORGE"}}
+with open(os.path.join(prof, ".active"), "w") as f:
+    f.write("main")
+with open(B.NAMES, "w") as f:
+    json.dump({"main": {"name": "ATLAS"}}, f)
+def sample(org):
+    with open(os.path.join(live, "plan-usage-history.json"), "w") as f:
+        json.dump({"samples": [{"org": org, "t": (time.time() + 5) * 1000, "u": {}}]}, f)
+sample("org-a")
+check("no warning when the app's account matches the label", B.account_mismatch() == "")
+sample("org-f")
+check("warning when the app is signed in as FORGE but labelled ATLAS",
+      "signed in as FORGE" in B.account_mismatch() and "calls this profile ATLAS" in B.account_mismatch(), B.account_mismatch())
+B.REMOTE = {}
+
 # ---- context window changes apply to stored token counts at once; 1M / 200K accepted ----
 B.PROJECT = ""
 as_("CW", "cw1", "report_usage", five_hour_pct=5, weekly_pct=5)

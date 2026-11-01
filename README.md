@@ -28,7 +28,8 @@ Coshift turns that into a shift change: whoever comes on picks up exactly where 
 - **Restarts instead of compaction.** At 70% context a session saves a full summary. The next session resumes from it with a two-line prompt.
 - **Any number of accounts.** `coshift run` starts Claude Code as whichever account has the most limit left.
 - **Questions reach you.** A session stuck on a decision asks on the board, and you get a phone alert if you want one. Your answer goes straight back to that session.
-- **You steer from anywhere.** The board works on your phone, in light and dark, and has a menu bar app (macOS) and a tray icon (Windows, Linux) showing every account's limits.
+- **You see it working.** Every account shows its sessions and their last action, and flags one that holds a task but has gone quiet. A Mac where the desktop app is signed in as the wrong account gets a warning.
+- **You steer from anywhere.** The board works on your phone, in light and dark. A menu bar app (macOS) opens on a panel with every account's limits and activity; Windows and Linux get a tray icon.
 
 ![The Coshift board: WORK and PERSONAL with their live limits at the top, shared by every project; below, the project tabs (Main board, docs-site, mobile-app, storefront) and the storefront project's tasks, with a question from WORK waiting for an answer. Desktop in light mode, phone in dark mode](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/board-overview.png)
 
