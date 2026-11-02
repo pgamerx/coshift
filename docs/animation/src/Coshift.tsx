@@ -42,14 +42,14 @@ const Pill: React.FC<{ text: string; color: string }> = ({ text, color }) => (
   <span style={{ fontSize: 12, color, border: `1px solid ${color}`, borderRadius: 99, padding: "2px 9px" }}>{text}</span>
 );
 
-const Card: React.FC<{ x: number; name: string; pill: [string, string]; fiveH: number; ctx: number; opacity: number }> =
-  ({ x, name, pill, fiveH, ctx, opacity }) => (
+const Card: React.FC<{ x: number; name: string; tool: string; pill: [string, string]; fiveH: number; ctx: number; opacity: number }> =
+  ({ x, name, tool, pill, fiveH, ctx, opacity }) => (
     <div style={{ position: "absolute", left: x, top: CARD_Y, width: 286, height: CARD_H, background: C.card,
                   border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 15px", boxSizing: "border-box", opacity }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <b style={{ fontSize: 18, letterSpacing: 0.5 }}>{name}</b><Pill text={pill[0]} color={pill[1]} />
       </div>
-      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Claude Code session</div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{tool} session</div>
       <Bar label="5-hour limit" value={fiveH} stop={85} />
       <Bar label="Context window" value={ctx} stop={70} />
       <div style={{ position: "absolute", top: 218, left: 15, fontSize: 12, color: C.muted, textTransform: "uppercase", letterSpacing: 1 }}>
@@ -126,7 +126,7 @@ export const Coshift: React.FC = () => {
         <div style={{ width: 120, height: 18, borderRadius: 9, background: C.accent,
                       transform: `rotate(${track(f, [[0, -25], [45, 0]])}deg)`, marginBottom: 28 }} />
         <div style={{ fontSize: 76, fontWeight: 800, letterSpacing: -1 }}>Coshift</div>
-        <div style={{ fontSize: 22, color: C.muted, marginTop: 10 }}>Your Claude Code accounts hand work to each other</div>
+        <div style={{ fontSize: 22, color: C.muted, marginTop: 10 }}>Your Claude Code and Codex accounts hand work to each other</div>
       </AbsoluteFill>
 
       <AbsoluteFill style={{ opacity: scene }}>
@@ -134,8 +134,8 @@ export const Coshift: React.FC = () => {
           Coshift <span style={{ color: C.muted, fontWeight: 400, fontSize: 15 }}>(team board) · any number of accounts, one project</span>
         </div>
 
-        <Card x={A_X} name="Account 1" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />
-        <Card x={F_X} name="Account 2" pill={fPill} fiveH={fFive} ctx={fCtx} opacity={1} />
+        <Card x={A_X} name="Account 1" tool="Claude Code" pill={aPill} fiveH={aFive} ctx={aCtx} opacity={1} />
+        <Card x={F_X} name="Account 2" tool="Codex" pill={fPill} fiveH={fFive} ctx={fCtx} opacity={1} />
 
         {/* board */}
         <div style={{ position: "absolute", left: B_X, top: CARD_Y, width: 286, height: CARD_H, opacity: board,

@@ -243,6 +243,24 @@ footer { margin-top: 36px; text-align: center; }
         </div>
         <div id="guidance" style="margin-top:10px"></div>
       </div>
+      <h2>Team</h2>
+      <div class="card">
+        <label for="tinstr">Shared instructions</label>
+        <textarea id="tinstr" style="min-height:110px;margin-top:6px" placeholder="What every account (Claude or Codex, web, desktop or CLI) should know about this project: stack, conventions, how to test, what not to touch."></textarea>
+        <div class="row" style="justify-content:space-between;margin:8px 0 14px">
+          <span class="muted">This project only. Seen with every board check; edit any time.</span>
+          <button id="tinsave" class="primary">Save</button>
+        </div>
+        <div class="row" style="margin-bottom:8px"><label for="tlead">Lead</label><select id="tlead" style="width:auto"></select>
+          <span class="muted">splits the work and decides; the others follow it</span></div>
+        <div class="row" style="margin-bottom:8px"><label for="trolefor">Role for</label><select id="trolefor" style="width:auto"></select></div>
+        <textarea id="trole" placeholder="e.g. Backend and database. Or: reviews every finished task, writes no features."></textarea>
+        <div class="row" style="justify-content:space-between;margin-top:8px">
+          <span class="muted">This project only. Every account always keeps off the others' files.</span>
+          <button id="tsave" class="primary">Save role</button>
+        </div>
+        <div id="roles" style="margin-top:10px"></div>
+      </div>
     </div>
   </div>
 
@@ -250,7 +268,7 @@ footer { margin-top: 36px; text-align: center; }
   <h2>Setup</h2>
   <details id="setup" class="card">
     <summary>Starter prompts</summary>
-    <p class="muted">Paste one into a Claude Code session. Give each session its own worktree so edits don't collide.</p>
+    <p class="muted">Paste one into a Claude Code or Codex session. Give each session its own worktree so edits don't collide.</p>
     <p class="muted" style="margin-bottom:0">New session, new goal:</p>
     <div class="copy"><code id="c1">Use the Coshift board. Split this goal into independent tasks with add_task, then claim one and start: [describe the goal]</code><button class="small" data-copy="c1">Copy</button></div>
     <p class="muted" style="margin-bottom:0">New session, join the work:</p>
@@ -259,7 +277,7 @@ footer { margin-top: 36px; text-align: center; }
     <div class="copy"><code id="c4">Run: curl -sS &quot;$COSHIFT_URL/api/help&quot; -H &quot;Authorization: Bearer $COSHIFT_TOKEN&quot; and follow it.
 Start with board resume and continue from your saved context.</code><button class="small" data-copy="c4">Copy</button></div>
     <p class="muted" style="margin-bottom:0">Session that was already working with its own task list:</p>
-    <div class="copy"><code id="c3">Other Claude accounts now work on this project in parallel, coordinated through the Coshift board. If you have the coshift tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.coshift/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
+    <div class="copy"><code id="c3">Other accounts (Claude Code and Codex) now work on this project in parallel, coordinated through the Coshift board. If you have the coshift tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.coshift/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
 1. Report your limits (report_usage).
 2. Move your current task list onto the board: add_task for every item, with done_summary for finished ones and, for the rest, a detail another account could pick up cold.
 3. Claim the task you're in the middle of and add_note where you are.
@@ -324,7 +342,7 @@ function taskHTML(t) {
     : blocked ? `<span class="badge muted">waiting</span>` : "";
   const who = t.status === "claimed"
     ? `<span class="who" style="font-weight:600;color:var(--text)"><span class="dot" style="background:${color};width:7px;height:7px"></span>${esc(t.owner)}</span><span>· ${since(t.updated)}</span>`
-    : `<span>${blocked ? "Waiting" : "Ready"}</span>`;
+    : `<span>${blocked ? "Waiting" : "Ready"}${t.for ? " · for " + esc(t.for) : ""}</span>`;
   const n = (t.notes || []).filter(x => !x.text.startsWith("QUESTION for the user")).slice(-1)[0];
   const older = (t.notes || []).slice(-8, -1).reverse().map(x => `<li><b>${esc(x.by)}</b> · ${since(x.t)}: ${esc(x.text)}</li>`).join("");
   return `<div class="task${t.needs_input ? " needs" : ""}" id="task-${t.id}" style="--owner:${t.status === "claimed" ? color : "var(--line)"}">
@@ -414,6 +432,22 @@ function render(s) {
     if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
   }
 
+  const team = s.team || { lead: "", roles: {} };
+  if (document.activeElement !== $("tinstr") && $("tinstr").dataset.saved !== (team.instructions || ""))
+    $("tinstr").value = $("tinstr").dataset.saved = team.instructions || "";
+  if (document.activeElement !== $("tlead"))
+    $("tlead").innerHTML = `<option value="">No lead (peers)</option>` + accts.map(([e]) => `<option value="${esc(e)}"${e === team.lead ? " selected" : ""}>${esc(e)}</option>`).join("");
+  if (document.activeElement !== $("trolefor")) {
+    const keep = $("trolefor").value;
+    $("trolefor").innerHTML = accts.map(([e]) => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
+    if ([...$("trolefor").options].some(o => o.value === keep)) $("trolefor").value = keep;
+  }
+  const roles = Object.entries(team.roles || {});
+  $("roles").innerHTML = roles.length ? `<table><tr><th>Account</th><th>Role</th><th></th></tr>` +
+    roles.map(([k, v]) => `<tr><td>${esc(k)}${k === team.lead ? " · lead" : ""}</td><td>${esc(v)}</td>
+      <td><button class="small" data-act="rclear" data-id="${esc(k)}">Clear</button></td></tr>`).join("") + `</table>`
+    : `<p class="muted">No roles yet: each account takes whatever task is next.</p>`;
+
   $("guidance").innerHTML = s.guidance.length ? `<table><tr><th>For</th><th>Guidance</th><th>Seen by</th><th></th></tr>` +
     s.guidance.map(g => `<tr><td>${esc(g.to === "all" ? "both" : g.to)}</td><td>${esc(g.text)}</td>
       <td>${g.read_by.length ? esc(g.read_by.join(", ")) : '<span class="warn">not yet</span>'}</td>
@@ -498,6 +532,8 @@ document.addEventListener("click", async e => {
     if (confirm(`Cancel task #${b.dataset.id}? It's kept, just taken out of the queue.`)) post(`/api/task/${b.dataset.id}/cancel`);
   } else if (b.dataset.act === "gremove") {
     if (confirm("Remove this guidance? Sessions stop seeing it.")) post(`/api/guidance/${b.dataset.id}/remove`);
+  } else if (b.dataset.act === "rclear") {
+    post("/api/team", { role_for: b.dataset.id, role: "" });
   } else if (b.dataset.act === "answer") {
     const text = prompt(`Your answer for task #${b.dataset.id} (goes straight to the account working on it):`);
     if (text && text.trim()) post(`/api/task/${b.dataset.id}/answer`, { text });
@@ -530,6 +566,12 @@ $("add").onclick = async () => {
 $("send").onclick = async () => {
   if (!$("msg").value.trim()) return toast("Write a message first");
   if (await post("/api/message", { to: $("to").value, text: $("msg").value })) $("msg").value = "";
+};
+$("tinsave").onclick = () => post("/api/team", { instructions: $("tinstr").value });
+$("tlead").onchange = () => post("/api/team", { lead: $("tlead").value });
+$("tsave").onclick = async () => {
+  if (!$("trolefor").value) return toast("No account to give a role to yet");
+  if (await post("/api/team", { role_for: $("trolefor").value, role: $("trole").value })) $("trole").value = "";
 };
 $("gadd").onclick = async () => {
   if (!$("gtext").value.trim()) return toast("Write the guidance first");

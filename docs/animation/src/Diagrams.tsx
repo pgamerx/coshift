@@ -43,11 +43,11 @@ const Arrow: React.FC<{ x1: number; y1: number; x2: number; y2: number; label: s
 export const HowItWorks: React.FC = () => (
   <AbsoluteFill style={{ background: C.bg, color: C.text, fontFamily: FONT }}>
     <div style={{ position: "absolute", left: 40, top: 28, fontSize: 26, fontWeight: 800 }}>How it works</div>
-    <Node x={30} y={110} w={230} h={110} title="WORK session" sub="Claude Code, cloud or desktop" color={C.accent} />
-    <Node x={30} y={300} w={230} h={110} title="PERSONAL session" sub="Claude Code, cloud or desktop" color={C.accent} />
+    <Node x={30} y={110} w={230} h={110} title="WORK session" sub="Claude Code: web, desktop or CLI" color={C.accent} />
+    <Node x={30} y={300} w={230} h={110} title="GPT session" sub="Codex: web or CLI" color={C.accent} />
     <Node x={495} y={170} w={250} h={180} title="Coshift board" sub={"Vercel + Upstash Redis\ntasks · notes · usage · context"} dashed color={C.accent} />
     <Node x={975} y={70} w={210} h={100} title="You" sub="board page, on your phone" />
-    <Node x={975} y={210} w={210} h={100} title="Live limits" sub="status line / usage pusher" />
+    <Node x={975} y={210} w={210} h={100} title="Live limits" sub="status line · Codex log · pusher" />
     <Node x={975} y={350} w={210} h={100} title="Context hook" sub="runs after tool calls" />
     <Arrow x1={260} y1={165} x2={493} y2={230} label="claim · notes · save_context" />
     <Arrow x1={260} y1={355} x2={493} y2={290} label="each with its own token" dy={14} />
