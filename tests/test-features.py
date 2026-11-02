@@ -249,5 +249,66 @@ except ValueError:
     check("'default' can't be a project name", True)
 B.PROJECT = ""
 
+# ---- Codex accounts: live limits from Codex's own session log ----
+logdir = os.path.join(HOME, "accounts", "CODY", "sessions", "2026", "11", "02")
+os.makedirs(logdir)
+open(os.path.join(HOME, "accounts", "CODY", "config.toml"), "w").close()
+win = lambda pct, mins, reset: {"used_percent": pct, "window_minutes": mins, "resets_at": reset}
+with open(os.path.join(logdir, "rollout-x.jsonl"), "w") as f:
+    f.write(json.dumps({"type": "session_meta", "payload": {"cwd": "/x"}}) + "\n")
+    f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count",
+        "info": {"last_token_usage": {"total_tokens": 190000}, "model_context_window": 258400},
+        "rate_limits": {"primary": win(42.4, 300, time.time() + 3600), "secondary": win(61, 10080, time.time() + 86400)}}}) + "\n")
+cu = B.codex_usage().get("codex:CODY") or {}
+check("Codex log: 5-hour and weekly windows read", cu.get("five_hour_pct") == 42 and cu.get("weekly_pct") == 61, cu)
+check("Codex log: context % from the last turn", cu.get("context_pct") == 74, cu)
+B.ORG = "codex:CODY"
+txt, err = as_("CODY", "c1", "claim_task")
+check("a Codex session over the context stop line can't claim", err and "context is at 74%" in txt, txt)
+B.ORG = ""
+
+# ---- team: a lead, roles, tasks assigned to one account ----
+with B.board(write=True) as b:
+    B.set_team(b, lead="A", role_for="F", role="Frontend only")
+txt, _ = as_("F", "f", "board_status")
+check("non-lead sees who leads and its own role", "A LEADS this project" in txt and "YOUR ROLE: Frontend only" in txt, txt[:600])
+txt, _ = as_("A", "a", "board_status")
+check("lead is told it leads, and sees F's role", "YOU ARE THE LEAD" in txt and "F's role: Frontend only" in txt, txt[:600])
+check("everyone gets the keep-off-their-files rule", "Never edit, revert" in txt)
+for who in ("A", "F"):
+    as_(who, who.lower(), "report_usage", five_hour_pct=10, weekly_pct=10)
+    with B.board(write=True) as b:
+        for t in b["tasks"]:
+            if t["status"] == "claimed":
+                t["status"] = "done"
+txt, _ = as_("A", "a", "add_task", title="ui polish", for_account="F")
+tid = int(txt.split("#")[1].split()[0])
+txt, err = as_("A", "a", "claim_task", id=tid)
+check("a task assigned to F is refused to A", err and "assigned to F" in txt, txt)
+txt, err = as_("F", "f9", "claim_task")
+check("F gets its assigned task first", not err and f"#{tid}" in txt, txt)
+with B.board(write=True) as b:
+    B.set_team(b, lead="")
+txt, _ = as_("F", "f", "board_status")
+check("no lead: peers", "No lead" in txt, txt[:400])
+
+# ---- shared instructions and delegation ----
+with B.board(write=True) as b:
+    B.set_team(b, instructions="Use pnpm. Tests: pnpm test.")
+txt, _ = as_("A", "a9", "board_status")
+check("shared instructions reach every account", "PROJECT INSTRUCTIONS FROM THE USER" in txt and "Use pnpm" in txt, txt[:400])
+txt, _ = as_("A", "a9", "add_task", title="api docs")
+did = int(txt.split("#")[1].split(":")[0])
+as_("A", "a9", "claim_task", id=did)
+txt, err = as_("F", "f9", "update_task", id=did, for_account="F")
+check("can't hand on another account's running task", err and "only it can hand it on" in txt, txt)
+txt, err = as_("A", "a9", "update_task", id=did, for_account="F")
+check("A delegates its running task to F", not err and "for F" in txt, txt)
+with B.board() as b:
+    t = B.find(b, did)
+check("delegated task is back in the queue, held for F", t["status"] == "open" and t["owner"] == "" and t["for"] == "F", t)
+txt, err = as_("A", "a9", "claim_task", id=did)
+check("A can't take it back", err and "assigned to F" in txt, txt)
+
 print(f"== failures: {FAILS}")
 sys.exit(1 if FAILS else 0)

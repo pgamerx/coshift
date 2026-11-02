@@ -150,7 +150,7 @@ const OS_LABEL = { darwin: "macOS", win32: "Windows", linux: "Linux" };
 
 async function setup(args) {
   banner("setup");
-  console.log(`  Coshift lets several Claude Code accounts work on your projects together: they split the work
+  console.log(`  Coshift lets several Claude Code and Codex accounts work on your projects together: they split the work
   into tasks on a shared board, hand over when one nears its limit, and restart from a saved summary
   when a session's context fills up. This takes about 3 minutes; you can re-run it any time.\n`);
 
@@ -159,7 +159,8 @@ async function setup(args) {
   const sys = OS_LABEL[process.platform] ? process.platform : "linux";
   python();
   good(`${OS_LABEL[sys]} · ${pyVersion()} · Node ${process.versions.node}`);
-  has("claude") ? good("Claude Code found") : warn(`Claude Code not found. Install it first: ${c.cyan("https://claude.com/claude-code")}`);
+  has("claude") ? good("Claude Code found") : warn(`Claude Code not found${has("codex") ? " (fine if you only use Codex)" : `. Install it first: ${c.cyan("https://claude.com/claude-code")}`}`);
+  if (has("codex")) good(`Codex found: add ChatGPT accounts later with ${c.cyan("coshift login NAME --codex")}`);
 
   // 2. hosting
   step(2, 7, "Where the board lives");
@@ -198,7 +199,7 @@ async function setup(args) {
   }
   const detectedAccts = (() => { try { return JSON.parse(pyOut(BOARD, ["detect-accounts"]).out || "{}"); } catch { return {}; } })();
   const maps = [];
-  const orgs = Object.entries(detectedAccts);
+  const orgs = Object.entries(detectedAccts).filter(([org]) => !org.startsWith("codex:"));  // Codex ones already have names
   if (orgs.length) {
     info(`Found ${orgs.length} Claude account${orgs.length > 1 ? "s" : ""} signed in on this computer. Which name is each? (This lets the board show their live limits.)`);
     for (const [org, u] of orgs) {
@@ -337,6 +338,7 @@ function renameAccount(oldName, newName) {
       st.statusLine.command = `coshift statusline ${n}`;
       fs.writeFileSync(sp, JSON.stringify(st, null, 2));
     }
+    if (isCodex(n) && has("codex")) prepareCodex(n);  // its MCP server carries the account name
   }
   // macOS switcher label: keep it matching, or the account mix-up check would warn
   const np = process.env.CLAUDE_SWITCH_MENU_NAMES || path.join(os.homedir(), "Library", "Application Support", "ClaudeSwitchMenu", "names.json");
@@ -357,6 +359,37 @@ function renameAccount(oldName, newName) {
 
 // ---------- other commands ----------
 const HOOK_CMD = 'sh "$CLAUDE_PROJECT_DIR/.claude/hooks/board-context.sh"';
+// The repo's pointer to the board, for sessions that don't have the board's tools (Claude Code on claude.ai/code,
+// Codex on chatgpt.com/codex): Codex reads AGENTS.md, Claude Code reads CLAUDE.md. The instructions themselves stay
+// on the board (Team → Shared instructions), so they're edited in one place.
+const AGENTS_BLOCK = `<!-- coshift:start -->
+## Coshift board
+
+Several accounts (Claude Code and Codex, on the web, desktop or CLI) work on this repo together through the Coshift board.
+At the start of every session or task:
+
+- If you have the board's tools (claim_task, resume, ...), call \`resume\`.
+- Otherwise, if \`COSHIFT_URL\` and \`COSHIFT_TOKEN\` are set, run this and follow what it says:
+  \`curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN"\`
+- Otherwise, ignore this section.
+
+Follow the project instructions, lead and roles the board shows you, and never change files another account's running task owns.
+<!-- coshift:end -->`;
+function agentsInstall(dir = process.cwd()) {
+  const root = path.resolve(dir);
+  if (!fs.existsSync(root)) return bad(`No folder ${root}`);
+  for (const f of ["AGENTS.md", "CLAUDE.md"]) {
+    const p = path.join(root, f);
+    const cur = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
+    const next = /<!-- coshift:start -->[\s\S]*?<!-- coshift:end -->/.test(cur)
+      ? cur.replace(/<!-- coshift:start -->[\s\S]*?<!-- coshift:end -->/, AGENTS_BLOCK)
+      : (cur ? cur.trimEnd() + "\n\n" : "") + AGENTS_BLOCK + "\n";
+    if (next !== cur) fs.writeFileSync(p, next);
+  }
+  good(`Board pointer added to ${root} (AGENTS.md for Codex, CLAUDE.md for Claude Code)`);
+  info("Commit both files so web sessions get them. Write the instructions themselves on the board: Team → Shared instructions.");
+}
+
 function hookInstall(dir = process.cwd()) {
   // the context hook for cloud sessions: the script plus a PostToolUse entry in the repo's .claude/settings.json
   const root = path.resolve(dir);
@@ -392,9 +425,13 @@ function env(name) {
   if (!t[n]) die(`Which account? ${Object.keys(t).filter((k) => k !== "admin").join(", ")}  (e.g. coshift env ${Object.keys(t)[0]})`);
   const text = `COSHIFT_URL=${url}\nCOSHIFT_TOKEN=${t[n]}`;
   const host = url.split("//")[1].split("/")[0];
-  console.log(`\n  ${c.bold(n)} → claude.ai/code → environment settings\n`);
-  console.log(`  ${c.dim("Environment variables:")}\n${text.split("\n").map((l) => "  " + l).join("\n")}\n`);
-  console.log(`  ${c.dim("Network access:")} allow ${c.cyan(host)}\n`);
+  console.log(`\n  ${c.bold(n)}'s cloud variables:\n\n${text.split("\n").map((l) => "  " + l).join("\n")}\n`);
+  console.log(`  ${c.orange("Claude Code on the web")} ${c.dim("(claude.ai/code → your environment → Edit)")}`);
+  console.log(`    Environment variables: paste both lines.  Network access: allow ${c.cyan(host)}\n`);
+  console.log(`  ${c.orange("Codex on the web")} ${c.dim("(chatgpt.com/codex → Settings → Environments → yours → Edit)")}`);
+  console.log(`    Environment variables (not Secrets: Codex hides secrets from the agent): add both.`);
+  console.log(`    Agent internet access: On, domain allowlist ${c.cyan(host)}, HTTP methods: All (the board needs POST).\n`);
+  console.log(`  ${c.dim("Once per repo:")} ${c.cyan("coshift agents")} ${c.dim("so web sessions find the board, then commit AGENTS.md and CLAUDE.md.")}\n`);
   if (copy(text)) good("Variables copied to the clipboard");
 }
 
@@ -470,6 +507,9 @@ function doctor() {
   const accts = JSON.parse(pyOut(BOARD, ["detect-accounts"]).out || "{}");
   check(Object.keys(accts).length > 0, `Live usage: ${Object.keys(accts).length} Claude account(s) found on this computer`,
     "No live usage source on this computer (optional; sessions report their own)", true);
+  for (const n of knownAccounts().filter((x) => fs.existsSync(acctDir(x)) && isCodex(x)))
+    check(spawnSync("codex", ["mcp", "get", "coshift"], { env: toolEnv(n), stdio: "ignore", shell: IS_WIN }).status === 0,
+      `${n} (Codex) connected (MCP)`, `${n} (Codex) not connected: coshift login ${n} --codex`);
   if (has("claude")) {
     const got = (n) => spawnSync("claude", ["mcp", "get", n], { encoding: "utf8", shell: IS_WIN }).status === 0;
     check(got("coshift") || got("team-board"), "Desktop sessions connected (MCP)", "Desktop sessions not connected: coshift setup → Connect this computer");
@@ -526,9 +566,9 @@ async function pusher(action = "install") {
   return spawnSync("crontab", ["-"], { input: next }).status === 0 ? good(action === "remove" ? "Usage pusher removed" : "Usage pusher running every minute (cron)") : bad("crontab refused");
 }
 
-// ---------- accounts: one Claude Code settings folder per account (CLAUDE_CONFIG_DIR) ----------
-// Claude Code keeps each folder's login separate (its own Keychain entry on macOS, its own credentials file
-// elsewhere), so Coshift never reads or copies a token.
+// ---------- accounts: one settings folder per account (CLAUDE_CONFIG_DIR, or CODEX_HOME for Codex) ----------
+// Claude Code and Codex keep each folder's login separate (Keychain or a credentials file), so Coshift never reads
+// or copies a token. A Codex account's folder has a config.toml; a Claude Code one never does.
 const ACCTS = path.join(HOME, "accounts");
 const acctDir = (n) => path.join(ACCTS, n.toUpperCase());
 const MAPS = path.join(HOME, "maps.json");
@@ -538,7 +578,11 @@ function knownAccounts() {
   try { for (const d of fs.readdirSync(ACCTS)) if (fs.statSync(path.join(ACCTS, d)).isDirectory()) set.add(d); } catch {}
   return [...set];
 }
+const isCodex = (n) => fs.existsSync(path.join(acctDir(n), "config.toml"));
+const toolOf = (n) => (isCodex(n) ? "codex" : "claude");
+const toolEnv = (n) => ({ ...process.env, [isCodex(n) ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"]: acctDir(n), COSHIFT_AS: n });
 function acctEmail(n) {
+  if (isCodex(n)) return fs.existsSync(path.join(acctDir(n), "auth.json")) ? "ChatGPT (Codex)" : "";  // presence only
   const j = readJson(path.join(acctDir(n), ".claude.json"), {});
   return (j.oauthAccount && j.oauthAccount.emailAddress) || "";
 }
@@ -557,17 +601,34 @@ function headroom(u, st) {
   if (!u) return 0; // unknown usage: neutral
   return Math.min((st.stop_5h || 85) - u.five_hour_pct, (st.stop_week || 90) - u.weekly_pct);
 }
-function pickAccount() {
+function pickAccount(tool) {
   const m = mappedAccount();
-  if (m) return { name: m.name, why: `mapped to ${m.dir}` };
-  const names = knownAccounts().filter((n) => fs.existsSync(acctDir(n)));
-  if (!names.length) die(`No accounts yet. Add one: ${c.cyan("coshift login ATLAS")}`);
+  if (m && (!tool || toolOf(m.name) === tool)) return { name: m.name, why: `mapped to ${m.dir}` };
+  const all = knownAccounts(), names = all.filter((n) => fs.existsSync(acctDir(n)) && (!tool || toolOf(n) === tool));
+  if (!names.length && tool === "codex") die(`No Codex account yet. Add one: ${c.cyan("coshift login NAME --codex")}`);
+  if (!names.length) die(all.length  // known from the board or the desktop app, but no terminal sign-in here yet
+    ? `${all.join(" and ")} ${all.length > 1 ? "are" : "is"} on the board, but not signed in to the Claude Code CLI on this computer yet\n    (the desktop app's sign-in is separate). Once per account: ${c.cyan(`coshift login ${all[0]}`)}`
+    : `No accounts yet. Add one: ${c.cyan("coshift login ATLAS")}`);
   const { usage, settings } = boardUsage();
   const best = names.map((n) => ({ n, h: headroom(usage[n], settings), u: usage[n] }))
     .sort((a, b) => b.h - a.h)[0];
   const why = best.u ? `most limit left (5h ${best.u.five_hour_pct}%, weekly ${best.u.weekly_pct}%)` : "no usage known yet";
   if (best.u && best.h <= 0) warn(`Every account is at its stop line. ${best.n} has the most left.`);
   return { name: best.n, why };
+}
+
+function prepareCodex(n) {
+  const dir = acctDir(n), cfg = path.join(dir, "config.toml");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, "");  // marks the folder as Codex's (see isCodex)
+  const env = { ...process.env, CODEX_HOME: dir };
+  // Codex starts MCP servers with a trimmed environment, so the account name goes in the server's own env
+  const pyExe = spawnSync(python()[0], [...python().slice(1), "-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
+  spawnSync("codex", ["mcp", "remove", "coshift"], { env, stdio: "ignore", shell: IS_WIN });
+  const extra = process.env.COSHIFT_HOME ? ["--env", `COSHIFT_HOME=${process.env.COSHIFT_HOME}`] : [];
+  spawnSync("codex", ["mcp", "add", "coshift", "--env", `COSHIFT_AS=${n}`, "--env", "COSHIFT_TOOL=codex", ...extra,
+    "--", pyExe, path.join(HOME, "board.py"), "serve"], { env, stdio: "ignore", shell: IS_WIN });
+  return dir;
 }
 
 function prepareAccount(n) {
@@ -588,9 +649,23 @@ function prepareAccount(n) {
   return dir;
 }
 
-async function login(name) {
+async function login(args) {
+  const codex = args.includes("--codex") || (args[0] && fs.existsSync(acctDir(args[0])) && isCodex(args[0]));
+  const name = args.find((a) => !a.startsWith("-"));
   const n = (name || await input("Account name (e.g. ATLAS)")).toUpperCase();
   if (!/^[A-Z0-9_-]{1,20}$/.test(n) || n === "ADMIN") die("Account names: 1-20 letters, digits, - or _.");
+  if (codex) {
+    if (!has("codex")) die(`Codex isn't installed: ${c.cyan("npm i -g @openai/codex")} or ${c.cyan("brew install codex")}`);
+    if (fs.existsSync(acctDir(n)) && !isCodex(n)) die(`${n} is a Claude Code account. Pick another name for the Codex one.`);
+    const dir = prepareCodex(n);
+    box([`${sym.dot} Signing in ${c.bold(n)} (Codex)`, "",
+      "Your browser opens: sign in with the ChatGPT account you want as " + c.orange(n) + ".",
+      "Your other accounts stay signed in."]);
+    run("codex", ["login"], { env: { ...process.env, CODEX_HOME: dir } });
+    const ok = spawnSync("codex", ["login", "status"], { env: { ...process.env, CODEX_HOME: dir }, stdio: "ignore", shell: IS_WIN }).status === 0;
+    if (ok && mode() === "vercel" && !tokens()[n]) info(`For Codex on the web too, give it a board token: ${c.cyan(`coshift account add ${n}`)}`);
+    return ok ? good(`${n} is signed in to Codex. Start it: ${c.cyan(`coshift run ${n}`)}`) : warn(`${n} doesn't look signed in yet. Run ${c.cyan(`coshift login ${n} --codex`)} again.`);
+  }
   if (!has("claude")) die(`Claude Code isn't installed: ${c.cyan("https://claude.com/claude-code")}`);
   const dir = prepareAccount(n);
   box([`${sym.dot} Signing in ${c.bold(n)}`, "",
@@ -603,12 +678,14 @@ async function login(name) {
 }
 
 function runAs(args) {
+  // `coshift run codex` / `coshift run claude`: the account with most limit left among that tool's accounts only
+  const tool = ["codex", "claude"].includes(args[0]) && !knownAccounts().includes(args[0].toUpperCase()) ? args.shift() : null;
   let name = args[0] && !args[0].startsWith("-") && knownAccounts().includes(args[0].toUpperCase()) ? args.shift().toUpperCase() : null;
   let why = "chosen";
-  if (!name) ({ name, why } = pickAccount());
+  if (!name) ({ name, why } = pickAccount(tool));
   if (!fs.existsSync(acctDir(name))) die(`${name} isn't set up on this computer. Run: ${c.cyan(`coshift login ${name}`)}`);
-  console.log(`  ${sym.dot} ${c.bold(name)} ${c.dim(`· ${why}${acctEmail(name) ? " · " + acctEmail(name) : ""}`)}`);
-  process.exit(run("claude", args, { env: { ...process.env, CLAUDE_CONFIG_DIR: acctDir(name), COSHIFT_AS: name } }));
+  console.log(`  ${sym.dot} ${c.bold(name)} ${c.dim(`· ${toolOf(name) === "codex" ? "Codex" : "Claude Code"} · ${why}${acctEmail(name) ? " · " + acctEmail(name) : ""}`)}`);
+  process.exit(run(toolOf(name), args, { env: toolEnv(name) }));
 }
 
 function map(args) {
@@ -791,7 +868,7 @@ async function shell() {
   for (;;) {
     const pick = await select("What do you want to do?", [
       { label: "Accounts", value: "accounts", hint: "live limits of every account" },
-      { label: "Start Claude Code", value: "run", hint: "as the account with most limit left" },
+      { label: "Start a session", value: "run", hint: "Claude Code or Codex, as the account with most limit left" },
       { label: "Board status", value: "status", hint: "sessions and tasks of this repo's project" },
       { label: "Projects", value: "projects", hint: "list them, or give this repo its own board" },
       { label: "Open the board page", value: "open" },
@@ -800,6 +877,7 @@ async function shell() {
       ...(mode() === "vercel" ? [
         { label: "Cloud variables for an account", value: "env", hint: "copy to claude.ai/code" },
         { label: "Add the context hook to a repo", value: "hook", hint: "cloud sessions report their context" },
+        { label: "Connect a repo for web sessions", value: "agents", hint: "AGENTS.md + CLAUDE.md point at the board" },
         { label: "Add an account / new token", value: "account" },
         { label: "Redeploy the board", value: "deploy" },
         { label: "Usage pusher", value: "pusher", hint: "send live limits every minute" },
@@ -817,6 +895,7 @@ async function shell() {
       if (fs.existsSync(path.join(process.cwd(), ".git")) && (await confirm("Give this repo its own board?", false))) py(BOARD, ["projects", "add"]);
     }
     if (pick === "hook") hookInstall(await input("Repo folder", process.cwd()));
+    if (pick === "agents") agentsInstall(await input("Repo folder", process.cwd()));
     if (pick === "accounts") accounts();
     if (pick === "run") runAs([]);
     if (pick === "open") py(BOARD, ["web", "--open"]);
@@ -849,17 +928,19 @@ async function shell() {
   }
 }
 
-const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code accounts, one shared board per project
+const USAGE = `${c.bold("coshift")} ${c.dim(VERSION)}: several Claude Code and Codex accounts, one shared board per project
 
 ${c.dim("EVERY DAY")}
   ${c.cyan("coshift")}                       interactive menu
   ${c.cyan("coshift status [--full]")}       accounts and this repo's tasks at a glance
-  ${c.cyan("coshift run [NAME]")}            Claude Code as NAME, or the account with most limit left
+  ${c.cyan("coshift run [NAME]")}            start NAME, or the account with most limit left
+  ${c.cyan("coshift run codex|claude")}      the same, only among Codex / Claude Code accounts
   ${c.cyan("coshift open")}                  the board page
   ${c.cyan("coshift accounts")}              every account's limits, context window and sign-in
 
 ${c.dim("ACCOUNTS")}
   ${c.cyan("coshift login NAME")}            add an account (its own Claude Code sign-in)
+  ${c.cyan("coshift login NAME --codex")}    add a ChatGPT account for Codex
   ${c.cyan("coshift account rename A B")}    rename everywhere; its token keeps working
   ${c.cyan("coshift account add|rotate N")}  add an account to a Vercel board / new token
   ${c.cyan("coshift env NAME|admin")}        cloud variables for claude.ai/code (copied) / page key
@@ -868,7 +949,9 @@ ${c.dim("ACCOUNTS")}
 ${c.dim("PROJECTS AND SETTINGS")}
   ${c.cyan("coshift project [add [NAME]]")}  list projects / give this repo its own board
   ${c.cyan("coshift config [k v [ACCT]]")}   stop lines, context windows, phone alerts
+  ${c.cyan("coshift team [lead N|none]")}    this project's lead; ${c.cyan('coshift team role N "text"')} for roles
   ${c.cyan("coshift hook install [DIR]")}    context hook for cloud sessions (print: coshift hook)
+  ${c.cyan("coshift agents [DIR]")}          point web sessions (claude.ai, Codex web) at the board
 
 ${c.dim("SETUP AND UPKEEP")}
   ${c.cyan("coshift setup")}                 guided setup (Vercel or this computer)
@@ -892,8 +975,8 @@ async function main() {
     case "demo": return process.exit(py(path.join(PKG, "scripts", "demo.py"), rest));
     case "status": return status(rest);
     case "accounts": return accounts();
-    case "login": return login(rest[0]);
-    case "run": return runAs(rest);
+    case "login": return login(rest);
+    case "run": case "start": return runAs(rest);
     case "map": return map(rest);
     case "statusline": return statusline(rest);
     case "open": return process.exit(py(BOARD, ["web", "--open"]));
@@ -908,11 +991,12 @@ async function main() {
       syncApp();
       return process.exit(run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP }));
     case "project": case "projects": return process.exit(py(BOARD, ["projects", ...(rest[0] === "add" ? ["add", ...rest.slice(1)] : [])]));
+    case "agents": return agentsInstall(rest[0]);
     case "hook": return rest[0] === "install" ? hookInstall(rest[1]) : process.stdout.write(fs.readFileSync(path.join(PKG, "board", "board-context.sh")));
     case "claude-switch":
       if (process.platform !== "darwin") die("claude-switch swaps the Claude desktop app on macOS only.");
       return process.exit(run("bash", [path.join(PKG, "mac", "claude-switch"), ...rest])); // npm drops the exec bit
-    case "serve": case "web": case "show": case "add": case "reopen": case "call": case "push-usage": case "settings":
+    case "serve": case "web": case "show": case "add": case "reopen": case "call": case "push-usage": case "settings": case "team":
       return process.exit(py(BOARD, [cmd, ...rest]));
     default: die(`unknown command "${cmd}". Run: coshift help`);
   }

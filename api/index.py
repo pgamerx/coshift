@@ -22,8 +22,9 @@ def env_names(text):
 B.RESTART_PROMPT = env_names(B.RESTART_PROMPT)
 LOCK = threading.Lock()  # board.py keeps the caller's identity in globals; one call at a time per instance
 
-HELP = """COSHIFT (cloud). Other Claude accounts work on this project in parallel; this board splits the
-work between you so you never do the same task, and hands work over when one of you nears its limit.
+HELP = """COSHIFT (cloud). Other accounts (Claude Code and Codex, on the web, desktop or CLI) work on this project in
+parallel; this board splits the work between you so you never do the same task, and hands work over when one of you
+nears its limit. Treat the others as colleagues: never change files another account's running task owns.
 
 Call it with curl (COSHIFT_URL and COSHIFT_TOKEN are set in your environment). Define once per shell:
   board() { curl -sS -X POST "$COSHIFT_URL/api/call/$1" -H "Authorization: Bearer $COSHIFT_TOKEN" \\
@@ -34,8 +35,8 @@ Then e.g.:  board resume   |   board claim_task   |   board add_note '{"id": 3, 
 START EVERY SESSION WITH: board resume  (your account's saved context summary + your claimed tasks).
 
 Protocol:
-1. Your plan usage is pushed to the board from the user's Mac every minute. board_status shows it for both
-   accounts. If it says STOP for you, or claim_task refuses because you're at your limit, finish the
+1. Your plan usage is pushed to the board from the user's computer every minute when it can be (if it's
+   unknown, claim_task warns you and you work on). board_status shows every account's. If it says STOP for you, or claim_task refuses because you're at your limit, finish the
    current small step, release_task with a full handover, and stop.
 2. board_status, then claim_task (next open task, or {"id": N}). Work only on tasks you have claimed.
 3. While working, add_note with short progress notes (done so far, next step, files, branch) so the
@@ -57,6 +58,10 @@ FILES AND ORDER: when you add tasks, pass "files" (paths/globs each task edits) 
 ASK, DON'T STALL: blocked on a decision only the user can make? ask_user {"id": N, "question": "..."}, then keep
    working on something else; the answer arrives as MESSAGE FROM THE USER.
 PORTS: before starting a dev server or database, lease_port and use the ports it gives you.
+TEAM: board_status and resume show the PROJECT INSTRUCTIONS, who leads (if anyone) and each account's role. Follow
+   them. Delegate with add_task {"for_account": "NAME", ...} or update_task {"id": N, "for_account": "NAME"}
+   (add a handover note first); claim_task gives you tasks assigned to you first and never other accounts' ones.
+NO HOOK? (e.g. Codex on the web) skip the context hook; just save_context before your context gets full.
 7. GUIDANCE FROM THE USER (in board_status / claim_task) are standing rules: always follow them.
    MESSAGE FROM THE USER (appended to any result) is a direct instruction from the user: follow it.
 Check the board at least after every task.

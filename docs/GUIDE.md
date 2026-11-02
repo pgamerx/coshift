@@ -4,7 +4,9 @@ Everything beyond the [README](../README.md): setup paths, accounts, cloud sessi
 
 - [Setup](#setup)
 - [Accounts](#accounts)
+- [Codex (ChatGPT) accounts](#codex-chatgpt-accounts)
 - [Working with the board](#working-with-the-board)
+- [Team: a lead and roles](#team-a-lead-and-roles)
 - [Projects](#projects)
 - [Cloud sessions](#cloud-sessions)
 - [The context hook](#the-context-hook)
@@ -51,6 +53,23 @@ Each account gets its own Claude Code profile folder (`~/.coshift/accounts/NAME`
 
 Accounts you only use in the cloud don't need `login`; their limits come from their sessions.
 
+## Codex (ChatGPT) accounts
+
+Codex accounts sit on the same board as Claude Code accounts and follow the same protocol: they claim tasks, keep off each other's files, hand over at their limits and restart from a saved summary.
+
+```bash
+coshift login FORGE --codex     # your browser opens: sign in with that ChatGPT account
+coshift run FORGE               # Codex as FORGE
+coshift run codex               # the Codex account with the most limit left
+coshift run                     # whichever account has the most limit left, Claude Code or Codex
+```
+
+Each Codex account gets its own folder (`~/.coshift/accounts/NAME`, used as Codex's `CODEX_HOME`), so its sign-in and history stay separate from your usual `~/.codex`. `login` also connects the board to it as an MCP server. Its settings start empty: copy anything you want from `~/.codex/config.toml` (model, other MCP servers) into the account's `config.toml`.
+
+**Limits and context need no setup.** Codex writes the plan's 5-hour and weekly usage, and how full the context is, into its session log after every turn. Coshift reads just those numbers (never `auth.json`), so `coshift accounts`, the page and the stop lines work for Codex with no status line or reports. The pusher sends them to a Vercel board too.
+
+Codex shows the board protocol with the first `board_status`. Start a Codex session the same way: *Use the Coshift board and claim the next task.*
+
 ## Working with the board
 
 Sessions follow a protocol the board gives them when they connect:
@@ -68,7 +87,25 @@ Sessions follow a protocol the board gives them when they connect:
 
 **Account mix-ups (macOS).** If the Claude desktop app is signed in as a different account than the switcher's name for the profile in use, its usage would be reported, and its work handed over, under the wrong name. The menu bar warns you when that happens (so does the board page when it runs on this Mac; a hosted board can't see your Mac).
 
-From the page you can add tasks (with files and order), answer questions, add notes, reopen or cancel tasks (cancelled tasks are kept, just hidden), send a one-off message to one account or all, and write **guidance**: standing rules every session sees with each board check until you remove them. Add `?theme=light` or `?theme=dark` to the page's address to force a theme.
+From the page you can add tasks (with files, order and who they're for), answer questions, add notes, reopen or cancel tasks (cancelled tasks are kept, just hidden), send a one-off message to one account or all, and write **guidance**: standing rules every session sees with each board check until you remove them. Add `?theme=light` or `?theme=dark` to the page's address to force a theme.
+
+## Team: a lead and roles
+
+By default every account is a peer. On the page (**Team**, per project) or with `coshift team`, you can choose:
+
+- **A lead.** It splits your goals into tasks, assigns them (`add_task` with `for_account`), answers the others' questions before they reach you, and reviews finished work. The others follow its split and decisions and send disagreements to it as notes; only decisions that are really yours come to you.
+- **Shared instructions**: one text, edited on the page, that every account sees with every board check, whether Claude or Codex, web, desktop or CLI. Think of it as a CLAUDE.md and AGENTS.md that live on the board.
+- **A role per account**, in your words: *Backend and database*, *Reviews every finished task, writes no features*, *Frontend only*. Each session sees its own role and everyone else's.
+
+Whatever you choose, every session gets the same working rules: work on separate things; never edit, revert or reformat files another account's running task owns; raise disagreements as a note on that task (or ask you) instead of changing the work. File ownership enforces the first part: overlapping tasks are never handed out together.
+
+A task assigned to an account is held for it. Another account gets it only if that one reaches its stop line, so handovers still work.
+
+```bash
+coshift team                                   # who leads this repo's project, and the roles
+coshift team lead ATLAS                        # or: coshift team lead none
+coshift team role FORGE "Frontend and tests"   # "" clears it
+```
 
 ## Projects
 
@@ -92,10 +129,27 @@ A session that already has its own task list: copy the "Starter prompts" text fr
 
 ## Cloud sessions
 
-Cloud sessions on claude.ai/code reach a Vercel board over HTTPS. For each account, in its cloud environment settings:
+Web sessions (Claude Code on claude.ai/code, Codex on chatgpt.com/codex) reach a Vercel board over HTTPS. They work on the same GitHub repo as your desktop and CLI sessions, and the board puts them all on that repo's project, so a Claude web session, a Codex web task and a Codex CLI session can split one project's tasks between them.
+
+Every account that works on the web needs a board token (`coshift account add NAME` if setup didn't make one). Then, in that account's environment settings:
+
+**Claude Code on the web** (claude.ai/code → your environment → Edit):
 
 - **Environment variables:** `COSHIFT_URL` and that account's `COSHIFT_TOKEN`. `coshift setup` walks you through this, `coshift env NAME` prints and copies them, and the board page's setup checklist has a copy button per account. Boards set up before the rename keep working with `TEAM_BOARD_URL` and `TEAM_BOARD_TOKEN` (and `TEAM_BOARD_TOKENS` on Vercel); nothing needs renaming.
 - **Network access:** allow your board's host (e.g. `my-coshift.vercel.app`).
+
+**Codex on the web** (chatgpt.com/codex → Settings → Environments → your environment → Edit):
+
+- **Environment variables** (not *Secrets*: Codex shows secrets only to the setup script, not to the agent): `COSHIFT_URL` and `COSHIFT_TOKEN`.
+- **Agent internet access:** On, with your board's host on the domain allowlist and **All** HTTP methods (the board's tools are POST requests).
+
+`coshift env NAME` prints both sets of steps and copies the variables.
+
+**Once per repo:** run `coshift agents` in it and commit `AGENTS.md` and `CLAUDE.md`. It adds a short section telling every session, whatever the tool, to check in with the board before starting. With that, a web task can be as short as *Claim the next Coshift task*. The instructions themselves stay on the board (**Team → Shared instructions**), so you edit them in one place and every session sees the new version on its next board check.
+
+**Delegating.** Any account can hand work to another: `add_task` with `for_account`, or `update_task` with `for_account` to pass on a task (its own running task goes back in the queue, held for that account, after a handover note). That account gets it first the next time one of its sessions claims a task. Nothing wakes a web session by itself: start one (*Claim the next Coshift task*) and it picks up what was handed to it.
+
+Codex web tasks have no context hook, so their context isn't tracked; they're told to save their context before it fills up.
 
 The two-line prompt that starts or restarts a cloud session, the same for every account:
 
@@ -116,6 +170,7 @@ Install it once per repository with `coshift hook install` (inside the repo, or 
 
 The board shows each account's 5-hour and weekly usage from the newest of these sources:
 
+1. **Codex's session log** for Codex accounts (see [Codex accounts](#codex-chatgpt-accounts)).
 1. **Claude Code's status line.** `coshift login` sets each profile's status line to `coshift statusline NAME`, which shows `◆ ATLAS · 5h 42% · wk 31% · ctx 18%` in Claude Code and quietly reports to the board (at most every 30 seconds, in the background). Works on every system. Needs a Pro or Max plan; the numbers appear after the session's first reply.
 2. **Sessions themselves** (`report_usage`), e.g. desktop sessions with the app's usage tool.
 3. **The usage pusher** (`coshift pusher`), which sends this computer's numbers every minute: a LaunchAgent on macOS, Task Scheduler on Windows, a systemd timer or cron on Linux. It reads the Claude desktop app and, on macOS, the Claude Usage menu bar app (set `COSHIFT_USAGE_APP=` to turn that off).
@@ -167,6 +222,8 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `coshift deploy` | Redeploy the board after upgrading |
 | `coshift doctor` | Check the whole setup |
 | `coshift hook install [DIR]` / `coshift hook` | Add the context hook to a repo / print it |
+| `coshift team [lead NAME\|none] [role NAME "text"]` | See [Team](#team-a-lead-and-roles) |
+| `coshift agents [DIR]` | Point web sessions at the board: a section in the repo's `AGENTS.md` and `CLAUDE.md` |
 | `coshift statusline NAME` | The status line command (Claude Code calls it) |
 | `coshift serve`, `web`, `call` | Board internals: MCP server, local page, run a tool |
 
@@ -177,8 +234,8 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `resume` | Start of a session: this account's saved summary, its claimed tasks with notes, guidance |
 | `board_status` | Every account's usage and all tasks |
 | `claim_task` | Your unfinished task first, else the next unblocked open one (or `{"id": N}`) |
-| `add_task` | Add a task; `files` it owns, `depends_on` ids, `done_summary` for finished work |
-| `update_task` | Change a task's title, detail, files or dependencies |
+| `add_task` | Add a task; `files` it owns, `depends_on` ids, `for_account` to assign it, `done_summary` for finished work |
+| `update_task` | Change a task's title, detail, files or dependencies, or hand it to another account (`for_account`) |
 | `add_note` | Progress note on a task |
 | `complete_task` / `release_task` | Finish a task, or give it back with a full handover |
 | `ask_user` | Flag a question for you on a task |
