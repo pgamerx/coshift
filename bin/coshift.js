@@ -134,6 +134,37 @@ function copy(text) {
   return spawnSync(tool[0], tool.slice(1), { input: text, shell: IS_WIN }).status === 0;
 }
 
+// Every deploy goes through here. Vercel's own refusal ("Error: Not authorized") doesn't say what to do, and new users
+// often don't know the board's deploys need the Vercel CLI signed in to the account that owns the board.
+function deployBoard({ quiet = false } = {}) {
+  if (!has("vercel")) {
+    bad(`The Vercel CLI isn't installed. Install it with ${c.cyan("npm i -g vercel")}, sign in with ${c.cyan("vercel login")}, then run ${c.cyan("coshift deploy")}.`);
+    return 1;
+  }
+  const signedIn = spawnSync("vercel", ["whoami"], { stdio: ["ignore", "ignore", "ignore"], timeout: 30000, shell: IS_WIN }).status === 0;
+  if (!signedIn) {
+    if (!process.stdin.isTTY) {
+      bad(`Not signed in to Vercel. Run ${c.cyan("vercel login")} with the account that owns your board, then ${c.cyan("coshift deploy")}.`);
+      return 1;
+    }
+    info("Sign in to Vercel first, with the account that owns your board (your board runs there)…");
+    if (run("vercel", ["login"])) {
+      bad(`Vercel sign-in didn't finish. Run ${c.cyan("vercel login")}, then ${c.cyan("coshift deploy")}.`);
+      return 1;
+    }
+  }
+  const r = spawnSync("vercel", ["deploy", "--prod", "--yes"],
+    { cwd: APP, stdio: quiet ? "pipe" : "inherit", encoding: "utf8", shell: IS_WIN });
+  const code = r.status === null ? 1 : r.status;
+  if (code) {
+    const said = quiet ? String(r.stderr || "").trim().split("\n").filter(Boolean).pop() : "";
+    bad(`Vercel didn't deploy the board${said ? ` (${said})` : ""}.`);
+    info(`"Not authorized"? Sign in again with ${c.cyan("vercel login")}, using the account that owns the board, and update the CLI`);
+    info(`with ${c.cyan("npm i -g vercel@latest")}. Then run ${c.cyan("coshift deploy")}. Check the account with ${c.cyan("vercel whoami")}.`);
+  }
+  return code;
+}
+
 function syncApp() {
   fs.mkdirSync(APP, { recursive: true, mode: 0o700 });
   for (const p of ["api", "board", "scripts", "vercel.json", ".vercelignore"]) {
@@ -243,7 +274,7 @@ async function setup(args) {
     result = JSON.parse(r.out);
     good("Tokens stored");
     info("Deploying…");
-    if (run("vercel", ["deploy", "--prod", "--yes"], here)) die("deploy failed.");
+    if (deployBoard()) process.exit(1);
     good(`Board live at ${c.cyan(result.url)}`);
   }
   for (const n of names) pyOut(BOARD, ["settings", "set", "context_window", String(windows[n]), n]);
@@ -480,7 +511,7 @@ async function account(args) {
   if (r.code) die(r.err.split("\n").pop());
   good(`${action === "add" ? "Added" : "New token for"} ${name.toUpperCase()}`);
   info("Deploying so the board knows…");
-  if (run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP, stdio: "ignore" })) die("deploy failed; run coshift deploy");
+  if (deployBoard({ quiet: true })) process.exit(1);
   good("Deployed");
   env(name);
 }
@@ -495,6 +526,11 @@ function doctor() {
   check(!!m, `Board: ${m === "vercel" ? remote().url : "this computer only"}`, "Not set up yet: run coshift setup");
   if (m === "vercel") {
     check(has("vercel"), "Vercel CLI installed", "Vercel CLI missing: npm i -g vercel");
+    if (has("vercel")) {
+      const who = spawnSync("vercel", ["whoami"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, shell: IS_WIN });
+      check(who.status === 0, `Vercel CLI signed in as ${String(who.stdout || "").trim().split("\n").pop()} (deploys need the account that owns the board)`,
+        "Vercel CLI not signed in: run vercel login (needed for coshift deploy and coshift update)");
+    }
     const t = tokens();
     const any = Object.entries(t).find(([k]) => k !== "admin");
     if (any) {
@@ -915,7 +951,7 @@ async function shell() {
     if (pick === "tray") await tray(await select(process.platform === "darwin" ? "Menu bar app" : "Tray icon",
       [{ label: "Install / restart", value: "install" }, { label: "Remove", value: "remove" }]));
     if (pick === "setup") return setup([]);
-    if (pick === "deploy") { syncApp(); run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP }); }
+    if (pick === "deploy") { syncApp(); deployBoard(); }
     if (pick === "pusher") await pusher(await select("Usage pusher", [{ label: "Install / restart", value: "install" }, { label: "Remove", value: "remove" }]));
     if (pick === "env") {
       const names = Object.keys(tokens()).filter((k) => k !== "admin");
@@ -951,7 +987,7 @@ ${c.dim("ACCOUNTS")}
 ${c.dim("PROJECTS AND SETTINGS")}
   ${c.cyan("coshift project [add [NAME]]")}  list projects / give this repo its own board
   ${c.cyan("coshift config [k v [ACCT]]")}   stop lines, context windows, phone alerts
-  ${c.cyan("coshift team [lead N|none]")}    this project's lead; ${c.cyan('coshift team role N "text"')} for roles
+  ${c.cyan("coshift team [lead N|none]")}    this project's lead; ${c.cyan('coshift team role N "text"')} for roles, ${c.cyan("coshift team only N on")} for assigned tasks only
   ${c.cyan("coshift hook install [DIR]")}    context hook for cloud sessions (print: coshift hook)
   ${c.cyan("coshift agents [DIR]")}          point web sessions (claude.ai, Codex web) at the board
 
@@ -1011,7 +1047,7 @@ function finishUpdate(from) {
   if (mode() === "vercel" && fs.existsSync(path.join(APP, ".vercel"))) {
     info("Updating your Vercel board so web sessions get the same version…");
     syncApp();
-    run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP, stdio: "ignore" }) ? warn(`Board not redeployed: run ${c.cyan("coshift deploy")}`) : good("Board redeployed");
+    if (!deployBoard({ quiet: true })) good("Board redeployed");
   }
   if (process.platform === "darwin" && fs.existsSync(path.join(os.homedir(), "Applications", "Claude Switch Menu.app")))
     info(`Menu bar app: ${c.cyan("coshift tray")} rebuilds it with this version.`);
@@ -1067,7 +1103,7 @@ async function main() {
     case "deploy":
       if (!fs.existsSync(path.join(APP, ".vercel"))) die("no Vercel board yet. Run: coshift setup");
       syncApp();
-      return process.exit(run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP }));
+      return process.exit(deployBoard());
     case "project": case "projects": return process.exit(py(BOARD, ["projects", ...(rest[0] === "add" ? ["add", ...rest.slice(1)] : [])]));
     case "agents": return agentsInstall(rest[0]);
     case "hook": return rest[0] === "install" ? hookInstall(rest[1]) : process.stdout.write(fs.readFileSync(path.join(PKG, "board", "board-context.sh")));

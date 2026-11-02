@@ -310,5 +310,26 @@ check("delegated task is back in the queue, held for F", t["status"] == "open" a
 txt, err = as_("A", "a9", "claim_task", id=did)
 check("A can't take it back", err and "assigned to F" in txt, txt)
 
+# ---- assigned tasks only: the board, not just the instructions, keeps an implementer to its own tasks ----
+with B.board(write=True) as b:
+    B.set_team(b, role_for="F", assigned_only=True)
+    for t in b["tasks"]:
+        if t["status"] == "claimed" and t["owner"] == "F":
+            t["status"] = "done"  # F's earlier task, so claim_task doesn't just resume it
+txt, err = as_("F", "f9", "claim_task")
+check("assigned-only F still gets its assigned task", not err and f"#{did}" in txt, txt)
+with B.board(write=True) as b:
+    B.find(b, did)["status"] = "done"
+txt, _ = as_("A", "a9", "add_task", title="unassigned chore")
+uid = int(txt.split("#")[1].split(":")[0])
+txt, err = as_("F", "f9", "claim_task")
+check("assigned-only F isn't handed an unassigned task", not err and "No open tasks are assigned to you" in txt, txt)
+txt, err = as_("F", "f9", "claim_task", id=uid)
+check("assigned-only F can't claim an unassigned task by id", err and "isn't assigned to you" in txt, txt)
+with B.board(write=True) as b:
+    B.set_team(b, role_for="F", assigned_only=False)
+txt, err = as_("F", "f9", "claim_task", id=uid)
+check("switched off, F can claim it", not err and f"#{uid}" in txt, txt)
+
 print(f"== failures: {FAILS}")
 sys.exit(1 if FAILS else 0)

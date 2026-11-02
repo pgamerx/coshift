@@ -304,6 +304,7 @@ def rename_account(old, new):
             if b.get("team"):
                 b["team"]["lead"] = fix(b["team"].get("lead", ""))
                 b["team"]["roles"] = {fix(k): v for k, v in b["team"].get("roles", {}).items()}
+                b["team"]["assigned_only"] = [fix(k) for k in b["team"].get("assigned_only", [])]
             if not name:  # aliases live on the main board; chains (A -> B -> C) point straight at the newest name
                 al = b.setdefault("aliases", {})
                 for k, v in list(al.items()):
@@ -556,6 +557,8 @@ def team_text(b, me):
         out.append("- No lead: you're peers. Agree through notes; the user decides ties (ask_user).")
     if roles.get(me):
         out.append(f"- YOUR ROLE: {roles[me]}")
+    if me in team.get("assigned_only", []):
+        out.append("- You take only tasks assigned to you (for_account); the board won't give you any other.")
     out += [f"- {k}'s role: {v}" for k, v in sorted(roles.items()) if k != me and v]
     return "\n".join(out) + "\n\n"
 
@@ -566,16 +569,20 @@ def guidance_text(b, me):
                                + "\n".join(f"- {x['text']}" for x in g) + "\n\n" if g else "")
 
 
-def set_team(b, lead=None, role_for=None, role=None, instructions=None):
+def set_team(b, lead=None, role_for=None, role=None, instructions=None, assigned_only=None):
     """The user's choice (page or CLI): lead = an account or "" for none; role_for + role = that account's role;
+    role_for + assigned_only = whether it may claim only tasks assigned to it;
     instructions = the project's shared instructions, the same for every account and tool."""
     team = b.setdefault("team", {"lead": "", "roles": {}})
     if instructions is not None:
         team["instructions"] = str(instructions).strip()[:8000]
     if lead is not None:
         team["lead"] = str(lead).strip().upper()
-    if role_for:
-        if str(role or "").strip():
+    if role_for and assigned_only is not None:
+        only = [k for k in team.get("assigned_only", []) if k != role_for.upper()]
+        team["assigned_only"] = only + [role_for.upper()] if assigned_only else only
+    if role_for and role is not None:
+        if str(role).strip():
             team["roles"][role_for.upper()] = str(role).strip()[:500]
         else:
             team["roles"].pop(role_for.upper(), None)
@@ -656,12 +663,14 @@ def t_claim_task(a):
         if ctx >= STOP_CONTEXT and not (mine and a.get("id") in (None, mine[0]["id"])):
             raise ValueError(f"this session's context is at {ctx}% (stop line {STOP_CONTEXT}%). Take no new task: finish "
                              "your current one, then save_context and give the user the two-line restart prompt.")
+        only_assigned = me in (b.get("team") or {}).get("assigned_only", [])
         if "id" in a and a["id"] is not None:
             t = find(b, int(a["id"]))
         elif mine:
             t = mine[0]  # resume your own unfinished task first
         else:
-            opens = [t for t in b["tasks"] if t["status"] == "open" and not reserved_for_other(b, t, me)]
+            opens = [t for t in b["tasks"] if t["status"] == "open" and not reserved_for_other(b, t, me)
+                     and (t.get("for") == me or not only_assigned)]
             t = next((t for t in opens if t.get("for") == me and not blockers(b, t)), None) \
                 or next((t for t in opens if not blockers(b, t)), None)  # your assigned tasks first
             if not t:
@@ -669,6 +678,8 @@ def t_claim_task(a):
                     return ("Every open task is blocked right now:\n" + "\n".join(
                         f"  #{o['id']} {o['title']}: {'; '.join(blockers(b, o))}" for o in opens)
                         + "\nWait, or ask the user what to do next.")
+                if only_assigned:
+                    return "No open tasks are assigned to you. Stop here; a co-lead or the user will assign you one."
                 return "No open tasks. Ask the user what's next, or split the current goal with add_task."
         if not (t["status"] == "claimed" and t["owner"] == me):
             br = blockers(b, t)
@@ -676,6 +687,9 @@ def t_claim_task(a):
                 raise ValueError(f"task #{t['id']} can't start yet: {'; '.join(br)}.")
         if t["status"] in ("done", "cancelled"):
             raise ValueError(f"task #{t['id']} is {t['status']}.")
+        if only_assigned and t.get("for") != me and not (t["status"] == "claimed" and t["owner"] == me):
+            raise ValueError(f"task #{t['id']} isn't assigned to you, and you take only tasks assigned to you "
+                             "(the user's setting). Ask a co-lead to assign it to you.")
         if t["status"] == "open" and reserved_for_other(b, t, me):
             raise ValueError(f"task #{t['id']} is assigned to {t['for']}. Pick another one.")
         if t["status"] == "claimed" and t["owner"] != me:
@@ -1249,7 +1263,7 @@ def web_post(path, a):
         return "Guidance saved. It applies from each account's next board action."
     if path == "/api/team":
         with board(write=True) as b:
-            set_team(b, a.get("lead"), a.get("role_for"), a.get("role"), a.get("instructions"))
+            set_team(b, a.get("lead"), a.get("role_for"), a.get("role"), a.get("instructions"), a.get("assigned_only"))
         return "Team saved. Sessions see it with their next board action."
     if path.startswith("/api/guidance/") and path.endswith("/remove"):
         gid = path.split("/")[3]
@@ -1476,20 +1490,24 @@ def cli(argv):
         print(t_add_task({"title": argv[1], "detail": argv[2] if len(argv) > 2 else ""}))
     elif cmd == "team":
         # team                     who leads this repo's project, and each account's role
-        # team lead NAME|none      team role NAME "text" ("" clears it)
+        # team lead NAME|none      team role NAME "text" ("" clears it)      team only NAME on|off
         who = canon(argv[2].upper()) if len(argv) > 2 and argv[2].lower() != "none" else ""  # outside board(): it locks
         with board(write=len(argv) > 1) as b:
             if argv[1:2] == ["lead"] and len(argv) == 3:
                 set_team(b, who)
             elif argv[1:2] == ["role"] and len(argv) in (3, 4):
                 set_team(b, role_for=who, role=argv[3] if len(argv) == 4 else "")
+            elif argv[1:2] == ["only"] and len(argv) == 4 and argv[3] in ("on", "off"):
+                set_team(b, role_for=who, assigned_only=argv[3] == "on")
             elif len(argv) > 1:
-                print('usage: team [lead NAME|none] [role NAME "text"]')
+                print('usage: team [lead NAME|none] [role NAME "text"] [only NAME on|off]')
                 return 1
             team = b.get("team") or {"lead": "", "roles": {}}
         print(f"Lead: {team['lead'] or 'none (peers)'}")
         for k, v in sorted(team["roles"].items()):
             print(f"  {k}: {v}")
+        if team.get("assigned_only"):
+            print(f"Assigned tasks only: {', '.join(team['assigned_only'])}")
     elif cmd == "settings":
         with board(write=len(argv) > 1) as b:
             if len(argv) in (4, 5) and argv[1] == "set":

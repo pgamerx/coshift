@@ -70,7 +70,7 @@ A session works out its project from its git repo: a repo with its own board use
 
 **Does it work on the web?** Yes. Claude Code on claude.ai/code and Codex on chatgpt.com/codex use the same board as your desktop and CLI sessions, on the same repo. Run `coshift env NAME` for each account's settings, and `coshift agents` once per repo.
 
-**Do I need Vercel?** No. "This computer only" needs no account; you just can't open the board from your phone or use it from cloud sessions.
+**Do I need Vercel?** No. "This computer only" needs no account; you just can't open the board from your phone or use it from cloud sessions. With a Vercel board, Coshift deploys through the Vercel CLI, so it must be signed in to the account that owns the board (`vercel login`); `coshift doctor` checks it.
 
 **Windows and Linux?** Yes: the board, the CLI, accounts and live limits work on all three. Only the desktop-app switcher in `mac/` is macOS-only.
 

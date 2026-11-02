@@ -1,6 +1,6 @@
 {
   "name": "coshift",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Run Claude Code and Codex accounts in parallel: a shared task board per project with file ownership, a lead and roles, usage-aware handovers, context-limit restarts and a phone-friendly page.",
   "keywords": ["claude", "claude-code", "anthropic", "codex", "openai", "chatgpt", "ai-agents", "multi-agent", "task-board", "mcp", "handover", "vercel"],
   "homepage": "https://github.com/pgamerx/coshift#readme",
