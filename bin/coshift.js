@@ -183,7 +183,7 @@ async function setup(args) {
 
   // 3. accounts + context windows
   step(3, 7, "Your accounts");
-  info("One short name per Claude account you'll use (it's how sessions and the board tell them apart).");
+  info("One short name per account you'll use, Claude or ChatGPT/Codex (it's how sessions and the board tell them apart).");
   const prev = (remote().names || Object.keys(tokens()).filter((n) => n !== "admin")).join(",");
   const names = (await input("Name your accounts (comma separated)", prev || "ATLAS,FORGE"))
     .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -847,7 +847,7 @@ async function tray(action = "install") {
   fs.copyFileSync(path.join(PKG, "tray", "coshift-tray-linux.py"), script);
   const pyExe = spawnSync(python()[0], [...python().slice(1), "-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
   fs.mkdirSync(path.dirname(auto), { recursive: true });
-  fs.writeFileSync(auto, `[Desktop Entry]\nType=Application\nName=Coshift\nComment=Claude Code accounts on the Coshift board\nExec=${pyExe} ${script}\nX-GNOME-Autostart-enabled=true\n`);
+  fs.writeFileSync(auto, `[Desktop Entry]\nType=Application\nName=Coshift\nComment=Claude Code and Codex accounts on the Coshift board\nExec=${pyExe} ${script}\nX-GNOME-Autostart-enabled=true\n`);
   run("pkill", ["-f", "coshift-tray-linux.py"], { stdio: "ignore" });
   const { spawn } = require("child_process");
   spawn(pyExe, [script], { detached: true, stdio: "ignore" }).unref();
@@ -884,6 +884,7 @@ async function shell() {
       ] : []),
       { label: process.platform === "darwin" ? "Menu bar app" : "Tray icon", value: "tray", hint: "limits and alerts by the clock" },
       { label: "Doctor", value: "doctor", hint: "check everything" },
+      { label: "Update Coshift", value: "update", hint: "newest version; your board too" },
       { label: "Run setup again", value: "setup" },
       { label: "Quit", value: "quit" },
     ]);
@@ -910,6 +911,7 @@ async function shell() {
       }
     }
     if (pick === "doctor") doctor();
+    if (pick === "update") await update([]);
     if (pick === "tray") await tray(await select(process.platform === "darwin" ? "Menu bar app" : "Tray icon",
       [{ label: "Install / restart", value: "install" }, { label: "Remove", value: "remove" }]));
     if (pick === "setup") return setup([]);
@@ -956,6 +958,7 @@ ${c.dim("PROJECTS AND SETTINGS")}
 ${c.dim("SETUP AND UPKEEP")}
   ${c.cyan("coshift setup")}                 guided setup (Vercel or this computer)
   ${c.cyan("coshift doctor")}                check the whole setup
+  ${c.cyan("coshift update [--auto on|off]")}  newest version, board redeployed too; auto-update
   ${c.cyan("coshift deploy")}                update a Vercel board after upgrading
   ${c.cyan("coshift pusher [remove]")}       send live limits every minute
   ${c.cyan("coshift tray [remove]")}         menu bar (macOS) / tray icon (Windows, Linux)
@@ -965,8 +968,82 @@ ${c.dim("SETUP AND UPKEEP")}
 
 Docs: ${c.cyan("https://github.com/pgamerx/coshift")}`;
 
+// ---------- updates: `coshift update`, a once-a-day check, and opt-in auto-update ----------
+const UPD = path.join(HOME, "update.json");  // {at, latest, auto}
+const newer = (a, b) => {  // is version a newer than b?
+  const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+function latestVersion() {
+  const r = spawnSync(process.execPath, ["-e", `fetch("https://registry.npmjs.org/coshift/latest").then(r=>r.json()).then(j=>console.log(j.version)).catch(()=>process.exit(1))`],
+    { encoding: "utf8", timeout: 15000 });
+  return r.status === 0 ? r.stdout.trim() : "";
+}
+function saveUpd(patch) {
+  try { fs.mkdirSync(HOME, { recursive: true }); fs.writeFileSync(UPD, JSON.stringify({ ...readJson(UPD, {}), ...patch })); } catch {}
+}
+
+async function update(args) {
+  if (args[0] === "--auto") {
+    if (!["on", "off"].includes(args[1])) return info(`Auto-update is ${readJson(UPD, {}).auto ? "on" : "off"}. Change it: ${c.cyan("coshift update --auto on|off")}`);
+    saveUpd({ auto: args[1] === "on" });
+    return good(args[1] === "on" ? "Auto-update on: Coshift installs new versions itself (checked once a day)" : "Auto-update off: you'll get a one-line notice instead");
+  }
+  if (args[0] === "--finish") return finishUpdate(args[1]);  // run by the newly installed version
+  banner("update");
+  const latest = latestVersion();
+  if (!latest) die("Couldn't reach npm to check for a new version.");
+  saveUpd({ at: Date.now(), latest });
+  if (!newer(latest, VERSION)) return good(`You're on the newest version (${VERSION})`);
+  info(`${VERSION} → ${c.bold(latest)}`);
+  const brew = fs.realpathSync(PKG).includes("/Cellar/");
+  const code = brew ? run("brew", ["upgrade", "coshift"]) : run("npm", ["install", "-g", `coshift@${latest}`]);
+  if (code) die(brew ? "brew upgrade failed" : `npm install failed. If it's a permissions error: ${c.cyan(`sudo npm install -g coshift@${latest}`)}, then ${c.cyan("coshift update")}`);
+  process.exit(run("coshift", ["update", "--finish", VERSION]));
+}
+
+function finishUpdate(from) {
+  // the board.py that sessions, the tray and the pusher run: a link into the package (a copy where links aren't allowed)
+  const link = path.join(HOME, "board.py");
+  if (fs.existsSync(link) && !fs.lstatSync(link).isSymbolicLink()) fs.copyFileSync(BOARD, link);
+  good(`Coshift ${VERSION} installed${from ? ` (was ${from})` : ""}`);
+  if (mode() === "vercel" && fs.existsSync(path.join(APP, ".vercel"))) {
+    info("Updating your Vercel board so web sessions get the same version…");
+    syncApp();
+    run("vercel", ["deploy", "--prod", "--yes"], { cwd: APP, stdio: "ignore" }) ? warn(`Board not redeployed: run ${c.cyan("coshift deploy")}`) : good("Board redeployed");
+  }
+  if (process.platform === "darwin" && fs.existsSync(path.join(os.homedir(), "Applications", "Claude Switch Menu.app")))
+    info(`Menu bar app: ${c.cyan("coshift tray")} rebuilds it with this version.`);
+  info(`What's new: ${c.cyan(`https://github.com/pgamerx/coshift/releases/tag/v${VERSION}`)}. Sessions pick up the new board on their next start.`);
+}
+
+// At most once a day, on commands people type: a one-line notice, or the update itself with auto-update on.
+// The check runs in the background and the result shows next time, so no command ever waits on npm.
+function checkForUpdate(cmd) {
+  if (!process.stdout.isTTY || process.env.COSHIFT_NO_UPDATE_CHECK || ["update", "serve", "statusline", "call", "web", "push-usage", "-v", "--version"].includes(cmd)) return;
+  const u = readJson(UPD, {});
+  if (!u.at || Date.now() - u.at > 864e5) {
+    saveUpd({ at: Date.now() });
+    const { spawn } = require("child_process");
+    spawn(process.execPath, ["-e", `fetch("https://registry.npmjs.org/coshift/latest").then(r=>r.json()).then(j=>{const fs=require("fs"),p=${JSON.stringify(UPD)};let o={};try{o=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}o.latest=j.version;fs.writeFileSync(p,JSON.stringify(o))}).catch(()=>{})`],
+      { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  }
+  if (!u.latest || !newer(u.latest, VERSION)) return;
+  if (u.auto && u.tried !== u.latest) {  // one try per version, so a failing install doesn't run on every command
+    process.on("exit", () => {
+      saveUpd({ tried: u.latest });
+      console.log(`\n  ${sym.dot} Auto-update: installing coshift ${u.latest}…`);
+      spawnSync("coshift", ["update"], { stdio: "inherit", shell: IS_WIN });
+    });
+  } else if (!u.auto) {
+    process.on("exit", () => console.log(`\n  ${sym.dot} ${c.dim(`coshift ${u.latest} is out (you have ${VERSION}):`)} ${c.cyan("coshift update")}`));
+  }
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
+  checkForUpdate(cmd);
   switch (cmd) {
     case undefined: return process.stdin.isTTY ? shell() : console.log(USAGE);
     case "help": case "-h": case "--help": return console.log(USAGE);
@@ -985,6 +1062,7 @@ async function main() {
     case "account": return account(rest);
     case "pusher": return pusher(rest[0] === "remove" ? "remove" : "install");
     case "doctor": return doctor();
+    case "update": return update(rest);
     case "tray": return tray(rest[0] === "remove" ? "remove" : rest[0] === "run" ? "run" : "install");
     case "deploy":
       if (!fs.existsSync(path.join(APP, ".vercel"))) die("no Vercel board yet. Run: coshift setup");

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Coshift: a shared task board for Claude Code sessions on several accounts, working side by side.
+"""Coshift: a shared task board for Claude Code and Codex sessions on several accounts, working side by side.
 
-Runs as a stdio MCP server inside each Claude Code session (both desktop windows),
+Runs as a stdio MCP server inside each Claude Code or Codex session,
 as a web page for you (board.py web --open, or "Open Coshift" in the menu bar),
 and as a small CLI:  board.py show | add "title" ["detail"] | reopen <id>
 Sessions that started before the board was registered can use every tool through Bash:

@@ -4,7 +4,7 @@
 # Homebrew formula for Coshift. Lives in github.com/pgamerx/homebrew-tap as Formula/coshift.rb.
 # The release workflow (.github/workflows/release.yml) bumps `url` and `sha256` in the tap on every version tag.
 class Coshift < Formula
-  desc "Shared task board for running several Claude Code accounts on one project"
+  desc "Shared task board for running Claude Code and Codex accounts on one project"
   homepage "https://github.com/pgamerx/coshift"
   url "https://registry.npmjs.org/coshift/-/coshift-0.1.0.tgz"
   sha256 "REPLACE_WITH_SHA256"

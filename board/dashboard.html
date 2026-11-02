@@ -268,7 +268,7 @@ footer { margin-top: 36px; text-align: center; }
   <h2>Setup</h2>
   <details id="setup" class="card">
     <summary>Starter prompts</summary>
-    <p class="muted">Paste one into a Claude Code session. Give each session its own worktree so edits don't collide.</p>
+    <p class="muted">Paste one into a Claude Code or Codex session. Give each session its own worktree so edits don't collide.</p>
     <p class="muted" style="margin-bottom:0">New session, new goal:</p>
     <div class="copy"><code id="c1">Use the Coshift board. Split this goal into independent tasks with add_task, then claim one and start: [describe the goal]</code><button class="small" data-copy="c1">Copy</button></div>
     <p class="muted" style="margin-bottom:0">New session, join the work:</p>
@@ -277,7 +277,7 @@ footer { margin-top: 36px; text-align: center; }
     <div class="copy"><code id="c4">Run: curl -sS &quot;$COSHIFT_URL/api/help&quot; -H &quot;Authorization: Bearer $COSHIFT_TOKEN&quot; and follow it.
 Start with board resume and continue from your saved context.</code><button class="small" data-copy="c4">Copy</button></div>
     <p class="muted" style="margin-bottom:0">Session that was already working with its own task list:</p>
-    <div class="copy"><code id="c3">Other Claude accounts now work on this project in parallel, coordinated through the Coshift board. If you have the coshift tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.coshift/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
+    <div class="copy"><code id="c3">Other accounts (Claude Code and Codex) now work on this project in parallel, coordinated through the Coshift board. If you have the coshift tools (board_status, claim_task, ...), use them. Otherwise run `python3 ~/.coshift/board.py call help` and use `board.py call &lt;tool&gt; '&lt;json&gt;'` for every board action. Follow the protocol it describes.
 1. Report your limits (report_usage).
 2. Move your current task list onto the board: add_task for every item, with done_summary for finished ones and, for the rest, a detail another account could pick up cold.
 3. Claim the task you're in the middle of and add_note where you are.

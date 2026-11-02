@@ -8,7 +8,7 @@
 ![platforms](https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-555)
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/pgamerx/coshift/blob/main/LICENSE)
 
-![Two Claude Code accounts, Account 1 and Account 2, claim different tasks from a shared board; one hits its 5-hour limit and hands its task over with notes; at 70% context a session saves a summary and a new one resumes from two lines](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/coshift-demo.gif)
+![A Claude Code account and a Codex account, Account 1 and Account 2, claim different tasks from a shared board; one hits its 5-hour limit and hands its task over with notes; at 70% context a session saves a summary and a new one resumes from two lines](https://raw.githubusercontent.com/pgamerx/coshift/main/docs/img/coshift-demo.gif)
 
 ```bash
 npx coshift demo     # the board with example data, nothing to set up
@@ -73,6 +73,8 @@ A session works out its project from its git repo: a repo with its own board use
 **Do I need Vercel?** No. "This computer only" needs no account; you just can't open the board from your phone or use it from cloud sessions.
 
 **Windows and Linux?** Yes: the board, the CLI, accounts and live limits work on all three. Only the desktop-app switcher in `mac/` is macOS-only.
+
+**How do I update?** `coshift update`. It upgrades Coshift and redeploys your Vercel board. Coshift also tells you once a day when there's a new version; `coshift update --auto on` installs them by itself.
 
 **I set Coshift up before 0.3. Do I have to change anything?** No. Your board becomes the main board, and boards from before the rename keep their `TEAM_BOARD_*` variable names. Run `coshift deploy` after upgrading.
 

@@ -219,6 +219,8 @@ Environment variables set the defaults on a new board: `COSHIFT_STOP_5H`, `COSHI
 | `coshift account add NAME` / `rotate NAME` | Add an account to a Vercel board, or give one a new token |
 | `coshift pusher [remove]` | Usage pusher |
 | `coshift tray [remove]` | Menu bar / tray |
+| `coshift update` | Install the newest version (Homebrew or npm, whichever you used) and redeploy a Vercel board. Any command checks npm at most once a day and prints a one-line notice when there's a new version |
+| `coshift update --auto on\|off` | Let Coshift install new versions itself (off by default) |
 | `coshift deploy` | Redeploy the board after upgrading |
 | `coshift doctor` | Check the whole setup |
 | `coshift hook install [DIR]` / `coshift hook` | Add the context hook to a repo / print it |
