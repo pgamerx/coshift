@@ -253,7 +253,8 @@ footer { margin-top: 36px; text-align: center; }
         </div>
         <div class="row" style="margin-bottom:8px"><label for="tlead">Lead</label><select id="tlead" style="width:auto"></select>
           <span class="muted">splits the work and decides; the others follow it</span></div>
-        <div class="row" style="margin-bottom:8px"><label for="trolefor">Role for</label><select id="trolefor" style="width:auto"></select></div>
+        <div class="row" style="margin-bottom:8px"><label for="trolefor">Role for</label><select id="trolefor" style="width:auto"></select>
+          <label><input type="checkbox" id="tonly" style="width:auto"> Takes only tasks assigned to it</label></div>
         <textarea id="trole" placeholder="e.g. Backend and database. Or: reviews every finished task, writes no features."></textarea>
         <div class="row" style="justify-content:space-between;margin-top:8px">
           <span class="muted">This project only. Every account always keeps off the others' files.</span>
@@ -390,6 +391,7 @@ function renderSetup(s) {
     </div></div>`).join("");
 }
 
+let lastTeam = {};
 function render(s) {
   const accts = Object.entries(s.usage);
   renderProjects(s);
@@ -433,6 +435,7 @@ function render(s) {
   }
 
   const team = s.team || { lead: "", roles: {} };
+  lastTeam = team;
   if (document.activeElement !== $("tinstr") && $("tinstr").dataset.saved !== (team.instructions || ""))
     $("tinstr").value = $("tinstr").dataset.saved = team.instructions || "";
   if (document.activeElement !== $("tlead"))
@@ -441,10 +444,12 @@ function render(s) {
     const keep = $("trolefor").value;
     $("trolefor").innerHTML = accts.map(([e]) => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
     if ([...$("trolefor").options].some(o => o.value === keep)) $("trolefor").value = keep;
+    $("tonly").checked = (team.assigned_only || []).includes($("trolefor").value);
   }
+  const only = team.assigned_only || [];
   const roles = Object.entries(team.roles || {});
   $("roles").innerHTML = roles.length ? `<table><tr><th>Account</th><th>Role</th><th></th></tr>` +
-    roles.map(([k, v]) => `<tr><td>${esc(k)}${k === team.lead ? " · lead" : ""}</td><td>${esc(v)}</td>
+    roles.map(([k, v]) => `<tr><td>${esc(k)}${k === team.lead ? " · lead" : ""}${only.includes(k) ? " · assigned tasks only" : ""}</td><td>${esc(v)}</td>
       <td><button class="small" data-act="rclear" data-id="${esc(k)}">Clear</button></td></tr>`).join("") + `</table>`
     : `<p class="muted">No roles yet: each account takes whatever task is next.</p>`;
 
@@ -569,6 +574,8 @@ $("send").onclick = async () => {
 };
 $("tinsave").onclick = () => post("/api/team", { instructions: $("tinstr").value });
 $("tlead").onchange = () => post("/api/team", { lead: $("tlead").value });
+$("trolefor").onchange = () => { $("tonly").checked = (lastTeam.assigned_only || []).includes($("trolefor").value); };
+$("tonly").onchange = () => post("/api/team", { role_for: $("trolefor").value, assigned_only: $("tonly").checked });
 $("tsave").onclick = async () => {
   if (!$("trolefor").value) return toast("No account to give a role to yet");
   if (await post("/api/team", { role_for: $("trolefor").value, role: $("trole").value })) $("trole").value = "";

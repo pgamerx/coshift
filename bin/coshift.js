@@ -987,7 +987,7 @@ ${c.dim("ACCOUNTS")}
 ${c.dim("PROJECTS AND SETTINGS")}
   ${c.cyan("coshift project [add [NAME]]")}  list projects / give this repo its own board
   ${c.cyan("coshift config [k v [ACCT]]")}   stop lines, context windows, phone alerts
-  ${c.cyan("coshift team [lead N|none]")}    this project's lead; ${c.cyan('coshift team role N "text"')} for roles
+  ${c.cyan("coshift team [lead N|none]")}    this project's lead; ${c.cyan('coshift team role N "text"')} for roles, ${c.cyan("coshift team only N on")} for assigned tasks only
   ${c.cyan("coshift hook install [DIR]")}    context hook for cloud sessions (print: coshift hook)
   ${c.cyan("coshift agents [DIR]")}          point web sessions (claude.ai, Codex web) at the board
 
