@@ -268,6 +268,35 @@ txt, err = as_("CODY", "c1", "claim_task")
 check("a Codex session over the context stop line can't claim", err and "context is at 74%" in txt, txt)
 B.ORG = ""
 
+
+def codex_log(home, name, acct, at, five, week, failing_turns=False):
+    d = os.path.join(home, "sessions", "2026", "11", "03")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, name), "w") as f:
+        f.write(json.dumps({"type": "session_meta", "payload": {"creator_account_id": acct}}) + "\n")
+        f.write(json.dumps({"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(at)), "type": "event_msg",
+                            "payload": {"type": "token_count", "rate_limits": {
+                                "primary": win(five, 300, time.time() + 3600), "secondary": win(week, 10080, time.time() + 86400)}}}) + "\n")
+        if failing_turns:  # later turns that never reached the model (e.g. a login gone stale): no limits logged
+            f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "error": {"message": "401"}}}) + "\n")
+
+
+dob, app = os.path.join(HOME, "accounts", "DOB"), os.path.join(HOME, "codex-app")
+os.makedirs(dob)
+open(os.path.join(dob, "config.toml"), "w").close()
+codex_log(dob, "rollout-old.jsonl", "acct-1", time.time() - 7 * 3600, 35, 17, failing_turns=True)
+B.CODEX_DEFAULT_HOME = app
+cu = B.codex_usage()["codex:DOB"]
+check("Codex limits are dated by their event, not by later failing turns", 7 * 60 - 2 <= (time.time() - cu["at"]) / 60 <= 7 * 60 + 2
+      and cu["weekly_pct"] == 17, cu)
+codex_log(app, "rollout-app.jsonl", "acct-1", time.time() - 600, 16, 3)
+cu = B.codex_usage()["codex:DOB"]
+check("the same ChatGPT account used from the Codex app (~/.codex) gives the newer numbers",
+      cu["five_hour_pct"] == 16 and cu["weekly_pct"] == 3 and time.time() - cu["at"] < 700, cu)
+codex_log(app, "rollout-app.jsonl", "acct-other", time.time() - 60, 90, 90)
+check("another ChatGPT account in ~/.codex doesn't count", B.codex_usage()["codex:DOB"]["weekly_pct"] == 17)
+B.CODEX_DEFAULT_HOME = os.path.join(HOME, "no-codex-app")
+
 # ---- team: a lead, roles, tasks assigned to one account ----
 with B.board(write=True) as b:
     B.set_team(b, lead="A", role_for="F", role="Frontend only")

@@ -1547,33 +1547,56 @@ def _codex_last(path):
     return None
 
 
+def _event_time(ev):
+    try:
+        return datetime.fromisoformat(ev["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _codex_newest(home):
+    """(newest limits event, ChatGPT account id) from a Codex home's recent session logs. By the event's own time: a log
+    is also touched by turns that fail (e.g. a stale login) and log no limits."""
+    best = acct = None
+    for path in sorted(glob.glob(os.path.join(home, "sessions", "*", "*", "*", "rollout-*.jsonl")), key=os.path.getmtime)[-3:]:
+        try:
+            ev = _codex_last(path)
+            with open(path, "rb") as f:  # the first line is the session's meta, naming the account that ran it
+                who = (json.loads(f.readline()).get("payload") or {}).get("creator_account_id")
+        except (OSError, ValueError):
+            continue
+        if ev and not ev.get("timestamp"):  # older Codex versions: the log's own time
+            ev["timestamp"] = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat()
+        if ev and (not best or _event_time(ev) > _event_time(best)):
+            best, acct = ev, who
+    return best, acct
+
+
+CODEX_DEFAULT_HOME = os.path.expanduser("~/.codex")  # the ChatGPT/Codex app's own folder
+
+
 def codex_usage():
     """Live limits of the Codex (ChatGPT) accounts on this computer, keyed "codex:NAME". Codex writes them into its
-    session log (sessions/**/rollout-*.jsonl) after every turn. Reads only those numbers, never auth.json."""
+    session log (sessions/**/rollout-*.jsonl) after every turn. Reads only those numbers, never auth.json.
+    The same ChatGPT account used from the Codex app (~/.codex) counts too, whichever reported last."""
     out = {}
     try:
         names = sorted(os.listdir(ACCTS))
     except OSError:
         return out
+    app = None
     for n in names:
         d = os.path.join(ACCTS, n)
         if not os.path.exists(os.path.join(d, "config.toml")):
             continue
-        logs = sorted(glob.glob(os.path.join(d, "sessions", "*", "*", "*", "rollout-*.jsonl")), key=os.path.getmtime)
-        ev = path = None
-        for path in reversed(logs[-3:]):
-            try:
-                ev = _codex_last(path)
-            except OSError:
-                ev = None
-            if ev:
-                break
+        ev, acct = _codex_newest(d)
         if not ev:
             continue
-        pl = ev.get("payload") or {}
-        rl, info = pl.get("rate_limits") or {}, pl.get("info") or {}
+        app = app or _codex_newest(CODEX_DEFAULT_HOME)
+        lim = app[0] if acct and app[1] == acct and _event_time(app[0]) > _event_time(ev) else ev
+        rl, info = (lim.get("payload") or {}).get("rate_limits") or {}, (ev.get("payload") or {}).get("info") or {}
         u = {"profile": n.upper(), "five_hour_pct": 0, "weekly_pct": 0, "five_hour_resets": "", "weekly_resets": "",
-             "at": os.path.getmtime(path), "source": "codex"}
+             "at": _event_time(lim), "source": "codex"}
         for w in (rl.get("primary"), rl.get("secondary")):
             if not w:
                 continue
