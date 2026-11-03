@@ -5,7 +5,8 @@ import json, os, sys, tempfile, time
 
 HOME = tempfile.mkdtemp(prefix="coshift-features.")
 for k in ("KV_REST_API_URL", "UPSTASH_REDIS_REST_URL", "CLAUDE_CODE_ORGANIZATION_UUID", "COSHIFT_AS"):
-    os.environ.pop(k, None)
+    if not os.environ.get("COSHIFT_TEST_REDIS"):  # test-redis.py runs this against a fake Redis
+        os.environ.pop(k, None)
 os.environ.update(COSHIFT_HOME=HOME, COSHIFT_USAGE_APP="", CLAUDE_SWITCH_LIVE=os.path.join(HOME, "x"),
                   CLAUDE_SWITCH_HOME=os.path.join(HOME, "x"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board"))
@@ -188,7 +189,7 @@ B.rename_account("oldname", "newname")
 with B.board() as b:
     t = B.find(b, rid)
     check("rename rewrites usage, owner, notes and messages", "NEWNAME" in b["usage"] and "OLDNAME" not in b["usage"]
-          and t["owner"] == "NEWNAME" and t["notes"][-1]["by"] == "NEWNAME"
+          and t["owner"] == "NEWNAME" and B.last_note(t)["by"] == "NEWNAME"
           and any(m["to"] == "NEWNAME" for m in b["messages"]), (t["owner"], list(b["usage"])))
 txt, err = as_("OLDNAME", "on1", "claim_task")  # a session still configured with the old name
 check("a session using the old name works as the new one", not err and f"#{rid}" in txt and B.ME == "NEWNAME", txt[:120])

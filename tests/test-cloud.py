@@ -7,7 +7,8 @@ from http.server import ThreadingHTTPServer
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TMP = tempfile.mkdtemp(prefix="team-cloud-test.")
 for k in ("KV_REST_API_URL", "UPSTASH_REDIS_REST_URL", "CLAUDE_CODE_ORGANIZATION_UUID"):
-    os.environ.pop(k, None)
+    if not os.environ.get("COSHIFT_TEST_REDIS"):  # test-redis.py runs this against a fake Redis
+        os.environ.pop(k, None)
 os.environ.update(COSHIFT_HOME=TMP, COSHIFT_USAGE_APP="", COSHIFT_REQUIRE_USAGE="0",
                   COSHIFT_TOKENS=json.dumps({"tA": "ATLAS", "tF": "FORGE", "tX": "admin"}))
 spec = importlib.util.spec_from_file_location("api_index", os.path.join(ROOT, "api", "index.py"))

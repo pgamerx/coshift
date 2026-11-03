@@ -12,7 +12,7 @@ number of sessions from either account can read and write it safely.
 No network calls, no credentials: each session reports its own plan usage, which
 Claude reads with the desktop app's get_usage tool.
 """
-import glob, json, os, plistlib, re, socket, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid, webbrowser
+import atexit, glob, hashlib, json, os, plistlib, re, socket, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid, webbrowser
 from fnmatch import fnmatch
 
 try:  # exclusive lock on the local board file: fcntl on macOS/Linux, msvcrt on Windows
@@ -31,7 +31,7 @@ except ImportError:
                 return
             except OSError:
                 time.sleep(0.05)
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from datetime import datetime, timezone
 
@@ -146,13 +146,6 @@ def ago(t):
     return f"{m}m ago" if m < 120 else f"{m // 60}h ago"
 
 
-def redis(*cmd):
-    req = urllib.request.Request(REDIS_URL, data=json.dumps(cmd).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())["result"]
-
-
 def _fresh(b):
     b = b or {"next_id": 1, "tasks": [], "usage": {}}
     for k, v in (("sessions", {}), ("messages", []), ("guidance", [])):
@@ -181,28 +174,6 @@ def current_project(main):
 
 
 @contextmanager
-def _redis_doc(key, write):
-    if not write:
-        raw = redis("GET", key)
-        yield _fresh(json.loads(raw) if raw else None)
-        return
-    me, deadline = uuid.uuid4().hex, time.time() + 15
-    while not redis("SET", key + ":lock", me, "NX", "PX", "10000"):
-        if time.time() > deadline:
-            raise ValueError("board is busy, try again")
-        time.sleep(0.05)
-    try:
-        raw = redis("GET", key)
-        b = _fresh(json.loads(raw) if raw else None)
-        yield b
-        if not b.pop("_unchanged", False):
-            redis("SET", key, json.dumps(b))
-    finally:  # release only our own lock
-        redis("EVAL", "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0",
-              "1", key + ":lock", me)
-
-
-@contextmanager
 def _file_doc(key, write):
     path, lock = (BOARD, LOCK) if key == "board" else (os.path.join(HOME, "boards", key[6:] + ".json"),
                                                         os.path.join(HOME, "boards", key[6:] + ".lock"))
@@ -222,31 +193,454 @@ def _file_doc(key, write):
             os.replace(tmp, path)
 
 
-def _doc(key, write):
-    return _redis_doc(key, write) if REDIS_URL else _file_doc(key, write)
+# ---------- shared storage in Redis ----------
+# Each board is kept as small keys, so a call moves a few KB instead of the whole board:
+#   cs:<p>:v           version: every write of the versioned parts below INCRs it, and a warm process reuses its
+#                      copy of those parts while it's unchanged (a GET of a few bytes)
+#   cs:<p>:meta        the small parts: next_id, messages, guidance, team, settings, leases, projects, aliases
+#   cs:<p>:t:<id>      one task without its notes (it carries its last note and note count)
+#   cs:<p>:n:<id>      that task's notes, a list
+#   cs:<p>:open        ids of open and claimed tasks;  cs:<p>:done  done/cancelled ids, newest first, the last 50
+#                      (older finished tasks keep their t:/n: keys and are read only when asked for by id)
+#   cs:<p>:ins         the project's shared instructions (up to 8 KB), read only when they're sent
+#   cs:<p>:saved       each account's latest saved context;  cs:<p>:saved:<NAME>  its last five
+#   cs:<p>:s:<sid>     one session (a hash) and cs:<p>:ss its id by last seen; not versioned, written on their own
+#   cs:usage           each account's plan usage (a hash); not versioned, written on its own
+# <p> is the project ("default" = the main board). The one-document keys (board, board:<p>) of earlier versions are
+# copied over once, on first use, and left as they were.
+IO = [0, 0]  # bytes read from / written to Redis (the hosted API logs them per request)
+DONE_HOT, DONE_SHOWN = 50, 5  # finished tasks kept in the index / read by a normal call
+SESSION_DAYS = 30
+CACHE_FILE = os.path.join(HOME, "cache.json")
+_CACHE = None
+
+
+def _http(body):
+    req = urllib.request.Request(REDIS_URL.rstrip("/") + "/pipeline", data=body, method="POST",
+                                 headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.read()
+
+
+def pipe(cmds):
+    """Runs Redis commands in as few round trips as fit (Upstash's /pipeline); returns their results."""
+    out = []
+    for i in range(0, len(cmds), 200):
+        body = json.dumps(cmds[i:i + 200]).encode()
+        raw = _http(body)
+        IO[0], IO[1] = IO[0] + len(raw), IO[1] + len(body)
+        for r in json.loads(raw):
+            if "error" in r:
+                raise ValueError(f"storage error: {r['error']}")
+            out.append(r.get("result"))
+    return out
+
+
+def redis(*cmd):
+    return pipe([list(cmd)])[0]
+
+
+def _pairs(flat):
+    return dict(zip(flat[::2], flat[1::2])) if flat else {}
+
+
+def cache():
+    """This process's copies of boards by version (and its last hot-path writes). Local commands keep it in a file, so
+    the tray and pusher, which start fresh every time, don't re-read an unchanged board."""
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = {}
+        if not os.environ.get("VERCEL"):
+            try:
+                with open(CACHE_FILE, encoding="utf-8") as f:
+                    _CACHE = json.load(f)
+            except (OSError, ValueError):
+                pass
+            atexit.register(_save_cache, json.dumps(_CACHE, sort_keys=True))
+    return _CACHE
+
+
+def _save_cache(before):
+    if json.dumps(_CACHE, sort_keys=True) == before:
+        return
+    try:
+        fd, tmp = tempfile.mkstemp(dir=HOME, prefix=".cache.")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_CACHE, f)
+        os.replace(tmp, CACHE_FILE)
+    except OSError:
+        pass  # only a cache
 
 
 @contextmanager
-def board(write=False, project=None):
+def _redis_lock(key):
+    me, deadline = uuid.uuid4().hex, time.time() + 15
+    while not redis("SET", key, me, "NX", "PX", "10000"):
+        if time.time() > deadline:
+            raise ValueError("board is busy, try again")
+        time.sleep(0.05)
+    try:
+        yield
+    finally:  # release only our own lock
+        redis("EVAL", "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0",
+              "1", key, me)
+
+
+def _dump(x):
+    return json.dumps(x, sort_keys=True)
+
+
+def _stored(t):
+    return _dump({k: v for k, v in t.items() if k != "notes" and not k.startswith("_")})
+
+
+def _ih(text):
+    return hashlib.sha1(text.encode()).hexdigest()[:10] if text else ""
+
+
+def _split_ins(meta):
+    """meta without the project instructions (they get their own key; meta keeps their hash), and the instructions."""
+    team = meta.get("team") or {}
+    if "instructions" not in team:
+        return meta, None
+    return dict(meta, team={**{k: v for k, v in team.items() if k != "instructions"}, "ih": _ih(team["instructions"])}), \
+        team["instructions"]
+
+
+def _task(raw):
+    t = json.loads(raw)
+    t["notes"], t["_old"] = [], 0  # notes load on demand (load_notes); _old = how many of them are already stored
+    return t
+
+
+class RBoard(dict):
+    """One board in Redis, shaped like the file board. Parts load on first use; save() writes only what changed."""
+
+    def __init__(self, p, done=DONE_SHOWN):
+        super().__init__()
+        self.p, self.ndone, self.snap, self.extra, self.done_ids, self.ver = p, done, {"t": {}}, {}, [], None
+        self.locked = False
+
+    def k(self, *parts):
+        return ":".join(["cs", self.p, *map(str, parts)])
+
+    def load(self):
+        self.ver = redis("GET", self.k("v"))
+        if self.ver is None:
+            self.ver = _migrate(self)
+        hit = cache().get(f"doc:{self.p}:{self.ndone}")
+        parts = json.loads(hit[1]) if hit and hit[0] == self.ver else {"meta": json.loads(redis("GET", self.k("meta")) or "{}")}
+        meta = {"next_id": 1, "messages": [], "guidance": [], **parts["meta"]}
+        self.update(meta)
+        self.snap["meta"] = _dump(meta)
+        if "tasks" in parts:
+            self._tasks([json.dumps(t) for t in parts["tasks"]], parts["done"])
+        if "contexts" in parts:
+            self._part("contexts", parts["contexts"])
+
+    def _part(self, name, value):
+        self[name] = value
+        self.snap[name] = {k: _dump(v) for k, v in value.items()}
+        return value
+
+    def _tasks(self, raws, done_ids):
+        ts = sorted((_task(r) for r in raws if r), key=lambda t: t["id"])
+        self.snap["t"].update({t["id"]: _stored(t) for t in ts})
+        self.done_ids = done_ids
+        self["tasks"] = ts
+        return ts
+
+    def __missing__(self, name):
+        if name == "tasks":
+            ids, done = pipe([["SMEMBERS", self.k("open")], ["LRANGE", self.k("done"), 0, self.ndone - 1]])
+            ids = sorted({int(i) for i in ids + done})
+            return self._tasks(pipe([["MGET", *[self.k("t", i) for i in ids]]])[0] if ids else [], [int(i) for i in done])
+        if name == "usage":
+            return self._part(name, {a: json.loads(v) for a, v in _pairs(redis("HGETALL", "cs:usage")).items()})
+        if name == "contexts":  # each account's latest summary, as a one-item history
+            return self._part(name, {a: [json.loads(v)] for a, v in _pairs(redis("HGETALL", self.k("saved"))).items()})
+        if name == "sessions":  # the ones active in the last 3 hours: all any view or check needs
+            ids = redis("ZRANGEBYSCORE", self.k("ss"), now() - 3 * 3600, "+inf")
+            rows = pipe([["HGETALL", self.k("s", s)] for s in ids])
+            return self._part(name, {s: {f: json.loads(v) for f, v in _pairs(r).items()} for s, r in zip(ids, rows) if r})
+        raise KeyError(name)
+
+    def session(self, sid):
+        if "sessions" in self or not sid:
+            return self["sessions"].get(sid, {}) if sid else {}
+        return {f: json.loads(v) for f, v in _pairs(redis("HGETALL", self.k("s", sid))).items()}
+
+    def gone_sessions(self, secs):
+        return set(redis("ZRANGEBYSCORE", self.k("ss"), 0, now() - secs))
+
+    def fetch(self, tid):
+        """A task outside the hot index (finished a while ago), by id."""
+        if tid not in self.extra:
+            raw = redis("GET", self.k("t", tid)) if 0 < tid < self["next_id"] else None
+            self.extra[tid] = _task(raw) if raw else None
+            if raw:
+                self.snap["t"][tid] = _stored(self.extra[tid])
+        return self.extra[tid]
+
+    def all_tasks(self):
+        have = {t["id"] for t in self["tasks"]} | set(self.extra)
+        rest = [i for i in range(1, self["next_id"]) if i not in have]
+        for i in range(0, len(rest), 200):
+            for tid, raw in zip(rest[i:i + 200], redis("MGET", *[self.k("t", x) for x in rest[i:i + 200]])):
+                self.extra[tid] = _task(raw) if raw else None
+                if raw:
+                    self.snap["t"][tid] = _stored(self.extra[tid])
+        return self._loaded()
+
+    def _loaded(self):
+        hot = {t["id"] for t in self.get("tasks", [])}
+        return self.get("tasks", []) + [t for t in self.extra.values() if t and t["id"] not in hot]
+
+    def load_notes(self, tasks, n=None):
+        c, todo = cache(), []
+        for t in tasks:
+            want = min(n or 10 ** 9, t.get("n_notes", 0))
+            if "_old" not in t or t["_old"] >= want:
+                continue
+            hit = c.get(f"notes:{self.p}:{t['id']}")
+            if hit and hit[:2] == [t.get("n_notes", 0), t.get("nrev", 0)] and len(hit[2]) >= want:
+                self._fill_notes(t, hit[2][-want:])
+            else:
+                todo.append((t, want))
+        rows = pipe([["LRANGE", self.k("n", t["id"]), -w, -1] for t, w in todo])
+        for (t, w), row in zip(todo, rows):
+            got = [json.loads(x) for x in row]
+            self._fill_notes(t, got)
+            c[f"notes:{self.p}:{t['id']}"] = [t.get("n_notes", 0), t.get("nrev", 0), got[-20:]]
+
+    def _fill_notes(self, t, got):
+        t["notes"] = got + t["notes"][t["_old"]:]
+        t["_old"] = len(got)
+
+    def instructions(self, ih):
+        hit = cache().get(f"ins:{self.p}")
+        if not (hit and hit[0] == ih):
+            hit = cache()[f"ins:{self.p}"] = [ih, redis("GET", self.k("ins")) or ""]
+        return hit[1]
+
+    def meta(self):
+        return _split_ins({k: v for k, v in self.items()
+                           if k not in ("tasks", "usage", "contexts", "sessions") and not k.startswith("_")})[0]
+
+    def save(self):
+        del self["messages"][:-100]
+        cmds, bump, meta = [], False, self.meta()
+        ins = _split_ins(dict(self))[1]
+        if ins is not None and _ih(ins) != (json.loads(self.snap["meta"]).get("team") or {}).get("ih", ""):
+            cmds.append(["SET", self.k("ins"), ins])
+        if _dump(meta) != self.snap["meta"]:
+            cmds.append(["SET", self.k("meta"), _dump(meta)])
+            bump = True
+        for t in self._loaded():
+            new = t["notes"] if t.get("_rewrite") else t["notes"][t.get("_old", 0):]
+            if t.pop("_rewrite", False):
+                cmds.append(["DEL", self.k("n", t["id"])])
+                t["n_notes"], t["nrev"] = 0, t.get("nrev", 0) + 1
+            if new:
+                cmds.append(["RPUSH", self.k("n", t["id"]), *map(_dump, new)])
+                t["n_notes"], t["last_note"] = t.get("n_notes", 0) + len(new), new[-1]
+            t["_old"] = len(t["notes"])
+            rec, old = _stored(t), self.snap["t"].get(t["id"])
+            if rec == old:
+                continue
+            cmds.append(["SET", self.k("t", t["id"]), rec])
+            bump, was = True, json.loads(old)["status"] if old else None
+            live = t["status"] in ("open", "claimed")
+            if was is None or live != (was in ("open", "claimed")):
+                cmds.append(["LREM", self.k("done"), 0, t["id"]])
+                ids = [x for x in self.done_ids if x != t["id"]]
+                if live:
+                    cmds.append(["SADD", self.k("open"), t["id"]])
+                else:
+                    cmds += [["SREM", self.k("open"), t["id"]], ["LPUSH", self.k("done"), t["id"]],
+                             ["LTRIM", self.k("done"), 0, DONE_HOT - 1]]
+                    ids = [t["id"]] + ids
+                self.done_ids = ids[:self.ndone]
+        for name, key in (("usage", "cs:usage"), ("contexts", self.k("saved"))):
+            for a, v in self.get(name, {}).items():
+                cur = v if name == "usage" else v[-1:]
+                if v and _dump(cur) != self.snap[name].get(a):
+                    cmds.append(["HSET", key, a, _dump(v if name == "usage" else v[-1])])
+                    if name == "contexts":
+                        bump = True
+                        cmds += [["LPUSH", self.k("saved", a), _dump(v[-1])], ["LTRIM", self.k("saved", a), 0, 4]]
+            gone = [a for a in self.snap.get(name, {}) if not self[name].get(a)]
+            if gone:
+                cmds.append(["HDEL", key, *gone])
+                bump = bump or name == "contexts"
+        for sid, s in self.get("sessions", {}).items():
+            if _dump(s) != self.snap["sessions"].get(sid):
+                cmds += _session_cmds(self, sid, s)
+        for sid in set(self.snap.get("sessions", {})) - set(self.get("sessions", {})):
+            cmds += [["DEL", self.k("s", sid)], ["ZREM", self.k("ss"), sid]]
+        if bump:
+            cmds.append(["INCR", self.k("v")])
+        res = pipe(cmds)
+        if bump and int(res[-1]) == int(self.ver) + 1:  # nobody else wrote in between: our copy is the new version
+            self.ver = str(res[-1])
+            self.remember()
+        elif bump:
+            cache().pop(f"doc:{self.p}:{self.ndone}", None)
+
+    def remember(self):
+        parts = {"meta": self.meta()}
+        if "tasks" in self:
+            hot = [t for t in self._loaded() if t["status"] in ("open", "claimed") or t["id"] in self.done_ids]
+            parts.update(tasks=[json.loads(_stored(t)) for t in sorted(hot, key=lambda t: t["id"])], done=self.done_ids)
+        if "contexts" in self:
+            parts["contexts"] = {a: v[-1:] for a, v in self["contexts"].items() if v}
+        key, old = f"doc:{self.p}:{self.ndone}", cache().get(f"doc:{self.p}:{self.ndone}")
+        if old and old[0] == self.ver:  # same version: keep the parts this call didn't read
+            parts = {**json.loads(old[1]), **parts}
+        cache()[key] = [self.ver, json.dumps(parts)]
+
+
+def _session_cmds(rb, sid, fields):
+    k = rb.k("s", sid)
+    return [["HSET", k, *[x for f, v in fields.items() for x in (f, _dump(v))]], ["EXPIRE", k, SESSION_DAYS * 86400],
+            ["ZADD", rb.k("ss"), fields.get("last") or now(), sid],
+            ["ZREMRANGEBYSCORE", rb.k("ss"), 0, now() - SESSION_DAYS * 86400]]
+
+
+def _migrate(rb):
+    """First use of a board in this layout: copies the old one-document board into it (the old key stays as it was)."""
+    with nullcontext() if rb.locked else _redis_lock(rb.k("lock")):
+        v = redis("GET", rb.k("v"))
+        if v is not None:
+            return v
+        raw = redis("GET", "board" if rb.p == MAIN else "board:" + rb.p)
+        b = _fresh(json.loads(raw) if raw else None)
+        cmds, done = [], []
+        for t in b["tasks"]:
+            notes = t.pop("notes", [])
+            t.update(n_notes=len(notes), last_note=notes[-1] if notes else None)
+            cmds.append(["SET", rb.k("t", t["id"]), _dump(t)])
+            if notes:
+                cmds.append(["RPUSH", rb.k("n", t["id"]), *map(_dump, notes)])
+            if t["status"] in ("open", "claimed"):
+                cmds.append(["SADD", rb.k("open"), t["id"]])
+            else:
+                done.append(t)
+        done = sorted(done, key=lambda t: t.get("updated", 0), reverse=True)[:DONE_HOT]
+        if done:
+            cmds.append(["RPUSH", rb.k("done"), *[t["id"] for t in done]])
+        for a, u in b.pop("usage", {}).items():
+            cmds.append(["HSET", "cs:usage", a, _dump(u)])
+        for a, hist in b.pop("contexts", {}).items():
+            if hist:
+                cmds += [["HSET", rb.k("saved"), a, _dump(hist[-1])], ["RPUSH", rb.k("saved", a), *map(_dump, hist[::-1][:5])]]
+        for sid, s in b.pop("sessions", {}).items():
+            if now() - s.get("last", 0) < SESSION_DAYS * 86400:
+                cmds += _session_cmds(rb, sid, s)
+        b.pop("tasks")
+        meta, ins = _split_ins(b)
+        if ins:
+            cmds.append(["SET", rb.k("ins"), ins])
+        cmds += [["SET", rb.k("meta"), _dump(meta)], ["SET", rb.k("v"), 1]]
+        pipe(cmds)
+        return "1"
+
+
+@contextmanager
+def _redis_doc(key, write, done=DONE_SHOWN):
+    rb = RBoard(key[6:] or MAIN, done)
+    if not write:
+        rb.load()
+        yield rb
+        rb.remember()
+        return
+    with _redis_lock(rb.k("lock")):
+        rb.locked = True
+        rb.load()
+        yield rb
+        rb.pop("_unchanged", None)
+        rb.save()
+
+
+def _doc(key, write, done=DONE_SHOWN):
+    return _redis_doc(key, write, done) if REDIS_URL else _file_doc(key, write)
+
+
+@contextmanager
+def board(write=False, project=None, done=DONE_SHOWN):
     """Yields this project's board dict under an exclusive lock; saves atomically if write=True.
     A project board carries the main board's shared parts (usage, settings, port leases) while it's open."""
     global CURRENT
-    with _doc("board", write) as main:
+    with _doc("board", write, done) as main:
         name = current_project(main) if project is None else project
         CURRENT = name
         if not name:
             _apply_settings(main)
             yield main
             return
-        with _doc("board:" + name, write) as b:
+        with _doc("board:" + name, write, done) as b:
             for k in SHARED:
-                b[k] = main.setdefault(k, {})
+                b[k] = main[k] if k == "usage" else main.setdefault(k, {})
             before = json.dumps([main[k] for k in SHARED], sort_keys=True)
             _apply_settings(b)
             yield b
             for k in SHARED:
                 main[k] = b.pop(k)
             main["_unchanged"] = json.dumps([main[k] for k in SHARED], sort_keys=True) == before
+
+
+def put_usage(name, u):
+    """Hot path (the pusher every minute, the status line every turn): writes only this account's usage, and only when
+    its numbers changed or the stored ones are 5+ minutes old."""
+    if not REDIS_URL:
+        with _doc("board", True) as main:
+            main["usage"][name] = u
+        return
+    sig, last = _dump({k: v for k, v in u.items() if k != "at"}), cache().get("put:usage:" + name)
+    if last and last[0] == sig and now() - last[1] < 300:
+        return
+    redis("HSET", "cs:usage", name, _dump(u))
+    cache()["put:usage:" + name] = [sig, now()]
+
+
+def put_session(project, sid, **f):
+    """Hot path (every tool call, the context hook): updates these fields of one session and nothing else; skipped when
+    only its clock moved within the last minute."""
+    if not REDIS_URL:
+        with board(write=True, project=project) as b:
+            b["sessions"].setdefault(sid, {}).update(f)
+        return
+    rb, key = RBoard(project or MAIN), f"put:{project}:{sid}:{','.join(sorted(f))}"
+    sig, last = _dump({k: v for k, v in f.items() if k not in ("last", "context_at", "tool")}), cache().get(key)
+    if last and last[0] == sig and now() - last[1] < 60:
+        return
+    pipe(_session_cmds(rb, sid, f))
+    cache()[key] = [sig, now()]
+
+
+def session_of(b, sid):
+    """One session's fields, reading only that session from Redis."""
+    return b.session(sid) if isinstance(b, RBoard) else b["sessions"].get(sid or "", {})
+
+
+def find_task(b, tid):
+    """Task tid, or None. A Redis board holds only open, claimed and recently finished tasks; others load by id."""
+    t = next((t for t in b["tasks"] if t["id"] == tid), None)
+    return t or (b.fetch(tid) if isinstance(b, RBoard) else None)
+
+
+def all_tasks(b):
+    return b.all_tasks() if isinstance(b, RBoard) else b["tasks"]
+
+
+def load_notes(b, tasks, n=None):
+    """Makes t["notes"] hold at least each task's last n notes (all if None). File boards always hold them all."""
+    if isinstance(b, RBoard):
+        b.load_notes(tasks, n)
+
+
+def last_note(t):
+    return t["notes"][-1] if t.get("notes") else t.get("last_note")
 
 
 def projects():
@@ -282,21 +676,29 @@ def rename_account(old, new):
     with _doc("board", False) as main:
         if main.get("aliases", {}).get(old) == new:
             return new  # already renamed (e.g. on the page); the CLI still updates this computer's files
-        known = {k.upper() for k in main.get("usage", {})} | {v.upper() for v in main.get("aliases", {}).values()}
+        known = {k.upper() for k in main["usage"]} | {v.upper() for v in main.get("aliases", {}).values()}
     if new in known:
         raise ValueError(f"{new} is already an account")
     fix = lambda v: new if isinstance(v, str) and v.upper() == old else v  # noqa: E731
     for name in [""] + projects():
         with board(write=True, project=name) as b:
-            for d in (b["usage"], b.setdefault("contexts", {}), b.setdefault("settings", {}).setdefault("context_windows", {})):
+            if not isinstance(b, RBoard):
+                b.setdefault("contexts", {})
+            for d in (b["usage"], b["contexts"], b.setdefault("settings", {}).setdefault("context_windows", {})):
                 for k in [k for k in d if k.upper() == old]:
                     d[new] = d.pop(k)
             for sess in b["sessions"].values():
                 sess["account"] = fix(sess.get("account"))
-            for t in b["tasks"]:
+            tasks = all_tasks(b)
+            load_notes(b, tasks)
+            for t in tasks:
                 t["owner"], t["created_by"], t["for"] = fix(t.get("owner")), fix(t.get("created_by")), fix(t.get("for", ""))
+                if any(str(n.get("by")).upper() == old for n in t.get("notes", [])) and "_old" in t:
+                    t["_rewrite"] = True  # Redis keeps notes as a list: write it again
                 for n in t.get("notes", []):
                     n["by"] = fix(n.get("by"))
+                if t.get("last_note"):
+                    t["last_note"]["by"] = fix(t["last_note"].get("by"))
                 if t.get("needs_input"):
                     t["needs_input"]["by"] = fix(t["needs_input"].get("by"))
             for m in b["messages"] + b["guidance"]:
@@ -340,7 +742,7 @@ def window_for(b, account):
 
 def last_seen(b, t):
     """When the task's owner was last active: a task update, or its session reporting in (the hook, any tool)."""
-    return max(t.get("updated", 0), b["sessions"].get(t.get("session") or "", {}).get("last", 0))
+    return max(t.get("updated", 0), session_of(b, t.get("session")).get("last", 0))
 
 
 def ctx_pct(b, sess):
@@ -416,7 +818,7 @@ def blockers(b, t):
     """Why task t can't start now: unfinished dependencies, or files another running task owns."""
     out = []
     for d in t.get("depends_on", []):
-        dt = next((x for x in b["tasks"] if x["id"] == d), None)
+        dt = next((x for x in b["tasks"] if x["id"] == d), None)  # not among them on Redis = finished
         if dt and dt["status"] not in ("done", "cancelled"):
             out.append(f"waits for #{d} ({dt['status']})")
     for o in b["tasks"]:
@@ -441,10 +843,10 @@ def _deps(b, v, self_id=None):
 
 
 def find(b, tid):
-    for t in b["tasks"]:
-        if t["id"] == tid:
-            return t
-    raise ValueError(f"no task #{tid}")
+    t = find_task(b, tid)
+    if not t:
+        raise ValueError(f"no task #{tid}")
+    return t
 
 
 def over_limit(u):
@@ -490,8 +892,8 @@ def render(b, me=""):
                 out.append(f"      blocked: {'; '.join(blockers(b, t))}")
             if t.get("needs_input"):
                 out.append(f"      WAITING FOR THE USER: {t['needs_input']['q']}")
-            if st != "done" and t.get("notes"):
-                n = t["notes"][-1]
+            n = last_note(t)
+            if st != "done" and n:
                 out.append(f"      last note ({n['by']}, {ago(n['t'])}): {n['text']}")
     return "\n".join(out)
 
@@ -505,21 +907,33 @@ def need_me():
     return ME
 
 
+def _unread(b):
+    return ([m for m in b["messages"] if m["to"] in (ME, "all") and ME not in m["read_by"]],
+            [g for g in b["guidance"] if g["active"] and g["to"] in (ME, "all") and ME not in g["read_by"]])
+
+
 def touch_session(tool):
-    """Marks this session alive and delivers unread messages the user sent from the board page."""
+    """Marks this session alive and delivers unread messages the user sent from the board page.
+    Runs after every call, so it writes the board only when there is something to mark."""
     if not ME:
         return ""
-    with board(write=True) as b:
-        if not SID.startswith("cloud-"):  # a real session id: fold in this account's placeholder row (older calls)
-            if b["sessions"].pop(f"cloud-{ME}", None) is not None:
+    with board() as b:
+        project, unread, new_g = CURRENT, *_unread(b)
+        # a real session id: fold in this account's placeholder row (older calls)
+        fold = not SID.startswith("cloud-") and bool(session_of(b, f"cloud-{ME}"))
+    if unread or new_g or fold:
+        with board(write=True, project=project) as b:
+            if fold:
+                b["sessions"].pop(f"cloud-{ME}", None)
                 for t in b["tasks"]:
                     if t.get("session") == f"cloud-{ME}":
                         t["session"] = SID
-        b["sessions"].setdefault(SID, {}).update(account=ME, cwd=CWD, last=now(), tool=tool)
-        unread = [m for m in b["messages"] if m["to"] in (ME, "all") and ME not in m["read_by"]]
-        new_g = [g for g in b["guidance"] if g["active"] and g["to"] in (ME, "all") and ME not in g["read_by"]]
-        for m in unread + new_g:
-            m["read_by"].append(ME)
+            unread, new_g = _unread(b)
+            for m in unread + new_g:
+                m["read_by"].append(ME)
+    global SENT_IH
+    put_session(project, SID, account=ME, cwd=CWD, last=now(), tool=tool, **({"ih": SENT_IH} if SENT_IH else {}))
+    SENT_IH = ""
     out = ""
     if unread:
         out += ("\n\nMESSAGE FROM THE USER (sent from the Coshift board page; treat it as the user's instruction):\n"
@@ -538,12 +952,28 @@ TEAM_RULES = ("WORKING WITH THE OTHER ACCOUNTS (they may be Claude Code or Codex
               "- Hand work to another account with add_task or update_task and for_account (e.g. what fits its role).")
 
 
-def team_text(b, me):
-    """The project's team setup as the user chose it on the board: who leads, and each account's role."""
+def instructions_of(b):
+    """The project's shared instructions. A Redis board keeps them in their own key, read only when needed."""
+    team = b.get("team") or {}
+    if "instructions" not in team and team.get("ih") and isinstance(b, RBoard):
+        team["instructions"] = b.instructions(team["ih"])
+    return team.get("instructions") or ""
+
+
+def instructions_hash(b):
+    team = b.get("team") or {}
+    return team["ih"] if "instructions" not in team and "ih" in team else _ih(team.get("instructions") or "")
+
+
+def team_text(b, me, seen=False):
+    """The project's team setup as the user chose it on the board: who leads, and each account's role.
+    seen: this session already got the instructions as they are now, so they're not sent again (up to 8 KB)."""
     team = b.get("team") or {}
     lead, roles = team.get("lead", ""), team.get("roles", {})
-    out = [f"PROJECT INSTRUCTIONS FROM THE USER (for every account; always follow):\n{team['instructions']}\n"] \
-        if team.get("instructions") else []
+    out = [] if not (team.get("ih") or team.get("instructions")) else [
+        f"PROJECT INSTRUCTIONS FROM THE USER: unchanged since this session last saw them (still apply; resume shows "
+        f"them again; version {instructions_hash(b)}).\n" if seen else
+        f"PROJECT INSTRUCTIONS FROM THE USER (for every account; always follow):\n{instructions_of(b)}\n"]
     out.append(TEAM_RULES)
     if lead and lead == me:
         out.append(f"- YOU ARE THE LEAD on this project. Split the user's goals into tasks (add_task with for_account "
@@ -563,9 +993,9 @@ def team_text(b, me):
     return "\n".join(out) + "\n\n"
 
 
-def guidance_text(b, me):
+def guidance_text(b, me, seen=False):
     g = [x for x in b["guidance"] if x["active"] and x["to"] in ("all", me)]
-    return team_text(b, me) + ("GUIDANCE FROM THE USER (standing rules; always follow):\n"
+    return team_text(b, me, seen) + ("GUIDANCE FROM THE USER (standing rules; always follow):\n"
                                + "\n".join(f"- {x['text']}" for x in g) + "\n\n" if g else "")
 
 
@@ -603,7 +1033,22 @@ def t_board_status(a):
     head = "" if PROTOCOL_SHOWN else INSTRUCTIONS + "\n\n"
     PROTOCOL_SHOWN = True
     with board() as b:
-        return f"You are: {ME or 'unknown'}\n\n" + head + guidance_text(b, ME) + render(b, ME)
+        return f"You are: {ME or 'unknown'}\n\n" + head + guidance_text(b, ME, _instructions_seen(b)) + render(b, ME)
+
+
+SENT_IH = ""
+
+
+def _instructions_seen(b):
+    """Whether this session was already sent the project instructions as they are now; remembers that it has."""
+    if not instructions_hash(b):
+        return False
+    h = instructions_hash(b)
+    if session_of(b, SID).get("ih") == h:
+        return True
+    global SENT_IH
+    SENT_IH = h  # touch_session records it, after the board is closed
+    return False
 
 
 def t_report_usage(a):
@@ -611,9 +1056,9 @@ def t_report_usage(a):
     u = {"five_hour_pct": int(a["five_hour_pct"]), "weekly_pct": int(a["weekly_pct"]),
          "five_hour_resets": a.get("five_hour_resets_in", ""), "weekly_resets": a.get("weekly_resets_in", ""),
          "org": ORG, "at": now()}
-    with board(write=True) as b:
-        b["usage"][me] = u
-        others = {k: v for k, v in b["usage"].items() if k != me}
+    put_usage(me, u)
+    with _doc("board", False) as main:
+        others = {k: v for k, v in main["usage"].items() if k != me}
     flag = over_limit(u)
     msg = f"Recorded for {me}: 5h {u['five_hour_pct']}%, weekly {u['weekly_pct']}%."
     if flag:
@@ -656,7 +1101,7 @@ def t_claim_task(a):
         if flag:
             raise ValueError(f"you're at your limit ({flag}). Don't claim new work; another account will.")
         mine = [t for t in b["tasks"] if t["status"] == "claimed" and t["owner"] == me]
-        ctx = ctx_pct(b, b["sessions"].get(SID, {})) or 0
+        ctx = ctx_pct(b, session_of(b, SID)) or 0
         if live and live.get("context_pct"):
             # shortcut: the account's newest Codex session, which is almost always this one; per-session ids if not
             ctx = max(ctx, live["context_pct"])
@@ -701,8 +1146,11 @@ def t_claim_task(a):
             note(t, me, f"taken over from {t['owner']} ({'at limit' if over_limit(owner_u) else 'inactive'})")
         t["status"], t["owner"], t["session"] = "claimed", me, SID
         t["updated"] = now()
-        notes = "\n".join(f"  - {n['by']} ({iso(n['t'])}): {n['text']}" for n in t.get("notes", []))
-        guide = guidance_text(b, me)
+        load_notes(b, [t], 20)
+        notes = "\n".join(f"  - {n['by']} ({iso(n['t'])}): {n['text']}" for n in t["notes"][-20:])
+        if t.get("n_notes", len(t["notes"])) > 20:
+            notes = f"  ({t['n_notes'] - 20} older notes not shown)\n" + notes
+        guide = guidance_text(b, me, _instructions_seen(b))
         files = f"Files you own for this task (edit only these): {', '.join(t['files'])}\n" if t.get("files") else ""
     return warn + guide + (f"You own task #{t['id']}: {t['title']}\n{t['detail']}\n" + files
             + (f"Notes / handover so far:\n{notes}" if notes else "No notes yet."))
@@ -794,7 +1242,9 @@ def t_lease_port(a):
     need_me()
     with board(write=True) as b:
         s, leases = settings_of(b), b.setdefault("leases", {})
-        for sid in [k for k in leases if k in b["sessions"] and now() - b["sessions"][k].get("last", 0) > 24 * 3600]:
+        gone = b.gone_sessions(24 * 3600) if isinstance(b, RBoard) else \
+            {k for k, v in b["sessions"].items() if now() - v.get("last", 0) > 24 * 3600}
+        for sid in [k for k in leases if k in gone]:
             if sid != SID:  # sessions of other projects aren't on this board; their own board frees them
                 del leases[sid]  # free ranges of sessions gone for a day
         if SID not in leases:
@@ -814,11 +1264,11 @@ RESTART_PROMPT = ('Run: curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bear
 
 def t_report_context(a):
     me, pct = need_me(), int(a.get("pct") or 0)
-    with board(write=True) as b:
+    with _doc("board", False) as main:  # hot path: the hook calls this every few turns
         if a.get("tokens"):  # the hook sends raw tokens; the board knows each account's window
-            pct = min(100, int(a["tokens"]) * 100 // window_for(b, me))
-        b["sessions"].setdefault(SID, {}).update(account=me, context_pct=pct, context_tokens=int(a.get("tokens") or 0),
-                                                 context_at=now())
+            pct = min(100, int(a["tokens"]) * 100 // window_for(main, me))
+        project = current_project(main)
+    put_session(project, SID, account=me, context_pct=pct, context_tokens=int(a.get("tokens") or 0), context_at=now())
     if pct >= STOP_CONTEXT:
         return (f"CONTEXT LIMIT: this session is at {pct}% of its context window (stop line {STOP_CONTEXT}%). "
                 "Take no new task. Finish the current one, then call save_context with a full summary for your next "
@@ -832,7 +1282,7 @@ def t_save_context(a):
         raise ValueError("that's too short to continue from. Include: goal, decisions made, current state, branch and "
                          "commits, your claimed task and its next step, open questions, gotchas, files that matter.")
     with board(write=True) as b:
-        hist = b.setdefault("contexts", {}).setdefault(me, [])
+        hist = b["contexts"].setdefault(me, []) if isinstance(b, RBoard) else b.setdefault("contexts", {}).setdefault(me, [])
         hist.append({"t": now(), "session": SID, "text": text})
         del hist[:-5]  # keep the last five summaries per account
     return ("Context saved for " + me + ". Now give the user this prompt for the new session, in a code block, "
@@ -842,7 +1292,7 @@ def t_save_context(a):
 def t_resume(a):
     me = need_me()
     with board() as b:
-        hist = b.get("contexts", {}).get(me, [])
+        hist = (b["contexts"] if isinstance(b, RBoard) else b.get("contexts", {})).get(me, [])
         mine = [t for t in b["tasks"] if t["status"] == "claimed" and t["owner"] == me]
         out = guidance_text(b, me) + f"You are {me}.\n\n"
         if hist:
@@ -850,8 +1300,9 @@ def t_resume(a):
             out += f"SAVED CONTEXT from your previous session ({iso(c['t'])}, {ago(c['t'])}):\n{c['text']}\n\n"
         else:
             out += "No saved context for this account yet: start from board_status.\n\n"
+        load_notes(b, mine, 8)
         for t in mine:
-            notes = "\n".join(f"  - {n['by']} ({iso(n['t'])}): {n['text']}" for n in t.get("notes", [])[-8:])
+            notes = "\n".join(f"  - {n['by']} ({iso(n['t'])}): {n['text']}" for n in t["notes"][-8:])
             out += f"YOUR CLAIMED TASK #{t['id']}: {t['title']}\n{t['detail']}\n{notes}\n\n"
         return out + render(b, me)
 
@@ -1210,14 +1661,16 @@ def web_state():
 
 
 def _web_state():
-    with board() as b:
+    with board(done=DONE_HOT) as b:
+        load_notes(b, b["tasks"], 8)
+        instructions_of(b)  # the page edits them
         usage = {k: dict(v, stop=over_limit(v), age_min=int((now() - v["at"]) // 60)) for k, v in b["usage"].items()}
         sessions = sorted(({"id": k, **v, "context_pct": ctx_pct(b, v), "age_min": int((now() - v["last"]) // 60),
                             "task": next((f"#{t['id']} {t['title']}" for t in b["tasks"]
                                           if t["status"] == "claimed" and t.get("session") == k), "")}
                            for k, v in b["sessions"].items() if now() - v["last"] < 3 * 3600),
                           key=lambda x: x["last"], reverse=True)
-        tasks = [dict(t, stale=t["status"] == "claimed" and now() - last_seen(b, t) > STALE_CLAIM_MIN * 60,
+        tasks = [dict({k: v for k, v in t.items() if not k.startswith("_")}, stale=t["status"] == "claimed" and now() - last_seen(b, t) > STALE_CLAIM_MIN * 60,
                       blocked=blockers(b, t) if t["status"] == "open" else []) for t in b["tasks"]]
         return {"stop_5h": STOP_5H, "stop_week": STOP_WEEK, "usage": usage, "accounts": accounts_view(b["usage"]),
                 "sessions": sessions,
@@ -1227,7 +1680,7 @@ def _web_state():
                 "second_window": second_window_open(),
                 "stop_context": STOP_CONTEXT, "project": CURRENT or MAIN,
                 "setup": setup_steps(b, [dict(v) for v in b["sessions"].values()]),
-                "contexts": {k: v[-1] for k, v in b.get("contexts", {}).items() if v}}
+                "contexts": {k: v[-1] for k, v in (b["contexts"] if isinstance(b, RBoard) else b.get("contexts", {})).items() if v}}
 
 
 def web_post(path, a):
@@ -1410,12 +1863,13 @@ def push_usage():
     if not live:
         print("no usage found for the accounts in remote.json")
         return 1
-    with board(write=True) as b:
-        for name, u in live.items():
-            old = b["usage"].get(name)
-            if not old or u["at"] >= old["at"]:
-                b["usage"][name] = {k: u[k] for k in ("five_hour_pct", "weekly_pct", "five_hour_resets",
-                                                      "weekly_resets", "at")} | {"org": next(o for o, n in names.items() if n == name)}
+    with _doc("board", False) as main:
+        stored = dict(main["usage"])
+    for name, u in live.items():
+        old = stored.get(name)
+        if not old or u["at"] >= old["at"]:
+            put_usage(name, {k: u[k] for k in ("five_hour_pct", "weekly_pct", "five_hour_resets", "weekly_resets", "at")}
+                      | {"org": next(o for o, n in names.items() if n == name)})
     print("pushed: " + ", ".join(f"{n} {u['five_hour_pct']}%/{u['weekly_pct']}%" for n, u in live.items()))
     return 0
 
@@ -1443,19 +1897,20 @@ def ingest_statusline(d):
     sid = d.get("session_id") or SID
     global CWD
     CWD = (d.get("workspace") or {}).get("current_dir") or CWD  # the session's project, not this helper's
-    with board(write=True) as b:
-        if fh or sd:
-            b["usage"][me] = {"five_hour_pct": round(fh.get("used_percentage") or 0),
-                              "weekly_pct": round(sd.get("used_percentage") or 0),
-                              "five_hour_resets": resets_in(fh["resets_at"]) if fh.get("resets_at") else "",
-                              "weekly_resets": resets_in(sd["resets_at"]) if sd.get("resets_at") else "",
-                              "at": now(), "source": "statusline"}
-        if cw.get("context_window_size"):
-            b.setdefault("settings", {}).setdefault("context_windows", {})[me] = int(cw["context_window_size"])
-        if cw.get("used_percentage") is not None:
-            b["sessions"].setdefault(sid, {}).update(account=me, cwd=(d.get("workspace") or {}).get("current_dir") or CWD,
-                                                     last=now(), context_pct=round(cw["used_percentage"]), context_tokens=0,
-                                                     context_at=now())  # Claude Code's own %, already right
+    if fh or sd:
+        put_usage(me, {"five_hour_pct": round(fh.get("used_percentage") or 0),
+                       "weekly_pct": round(sd.get("used_percentage") or 0),
+                       "five_hour_resets": resets_in(fh["resets_at"]) if fh.get("resets_at") else "",
+                       "weekly_resets": resets_in(sd["resets_at"]) if sd.get("resets_at") else "",
+                       "at": now(), "source": "statusline"})
+    with _doc("board", False) as main:
+        project, win = current_project(main), main.get("settings", {}).get("context_windows", {}).get(me)
+    if cw.get("context_window_size") and win != int(cw["context_window_size"]):
+        with _doc("board", True) as main:
+            main.setdefault("settings", {}).setdefault("context_windows", {})[me] = int(cw["context_window_size"])
+    if cw.get("used_percentage") is not None:
+        put_session(project, sid, account=me, cwd=CWD, last=now(), context_pct=round(cw["used_percentage"]),
+                    context_tokens=0, context_at=now())  # Claude Code's own %, already right
     return 0
 
 
@@ -1548,6 +2003,8 @@ def cli(argv):
         boards = list(each_board())
         with board() as b:
             here, st = CURRENT or MAIN, settings_of(b)
+            load_notes(b, [t for t in b["tasks"] if t["status"] in ("claimed", "open")], 5)
+
             def brief(t):
                 n = next((x for x in reversed(t.get("notes", [])) if not x["text"].startswith("QUESTION")), None)
                 return {"id": t["id"], "title": t["title"], "status": t["status"], "owner": t.get("owner", ""),

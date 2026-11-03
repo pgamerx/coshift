@@ -89,6 +89,9 @@ class handler(BaseHTTPRequestHandler):
 
     def send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+        if self.path.startswith("/api/"):  # Vercel's logs: what each request cost in Redis bandwidth
+            print(f"{self.command} {self.path.split('?')[0]} {code}: redis read {B.IO[0]} B, wrote {B.IO[1]} B, "
+                  f"response {len(data)} B", flush=True)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
@@ -114,6 +117,7 @@ class handler(BaseHTTPRequestHandler):
         B.PROJECT = (q.get("project") or [""])[0] or self.headers.get("X-Project") or self.headers.get("X-Repo") or B.MAIN
 
     def do_GET(self):
+        B.IO[:] = [0, 0]
         path = self.path.split("?")[0]
         if path == "/":
             with open(B.PAGE, encoding="utf-8") as f:
@@ -143,6 +147,7 @@ class handler(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
+        B.IO[:] = [0, 0]
         path = self.path.split("?")[0]
         who = self.who()
         if not who:

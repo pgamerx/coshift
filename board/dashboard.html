@@ -355,7 +355,7 @@ function taskHTML(t) {
       : (t.depends_on || []).length ? `<div class="muted" style="margin-top:6px">After ${t.depends_on.map(d => "#" + d).join(", ")}</div>` : ""}
     ${(t.files || []).length ? `<div class="chips">${t.files.map(f => `<span class="chip">${esc(f)}</span>`).join("")}</div>` : ""}
     ${n ? `<div class="last"><b>${esc(n.by)}</b> · ${since(n.t)}: ${esc(n.text)}</div>` : ""}
-    ${older ? `<details style="margin-top:6px"><summary>${t.notes.length - 1} earlier note${t.notes.length > 2 ? "s" : ""}</summary><ul class="notes">${older}</ul></details>` : ""}
+    ${older ? `<details style="margin-top:6px"><summary>${(t.n_notes || t.notes.length) - 1} earlier note${(t.n_notes || t.notes.length) > 2 ? "s" : ""}</summary><ul class="notes">${older}</ul></details>` : ""}
     <div class="row acts" style="margin-top:10px">${btns.join("")}</div></div>`;
 }
 
