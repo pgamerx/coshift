@@ -11,6 +11,7 @@ os.environ.update(COSHIFT_HOME=HOME, COSHIFT_USAGE_APP="", CLAUDE_SWITCH_LIVE=os
                   CLAUDE_SWITCH_HOME=os.path.join(HOME, "x"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board"))
 import board as B  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 FAILS = 0
 
@@ -296,6 +297,24 @@ check("the same ChatGPT account used from the Codex app (~/.codex) gives the new
 codex_log(app, "rollout-app.jsonl", "acct-other", time.time() - 60, 90, 90)
 check("another ChatGPT account in ~/.codex doesn't count", B.codex_usage()["codex:DOB"]["weekly_pct"] == 17)
 B.CODEX_DEFAULT_HOME = os.path.join(HOME, "no-codex-app")
+
+# ---- Antigravity: limits from the running app's GetUserStatus; connected accounts show even without numbers ----
+os.makedirs(os.path.join(HOME, "accounts", "HED"), exist_ok=True)
+open(os.path.join(HOME, "accounts", "HED", "antigravity"), "w").close()
+iso_at = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+real_status, B._AGY[:] = B._antigravity_status, [0.0, {}]
+B._antigravity_status = lambda: {"cascadeModelConfigData": {"clientModelConfigs": [
+    {"quotaInfo": {"remainingFraction": 0.6, "resetTime": iso_at(time.time() + 3 * 3600)}},
+    {"quotaInfo": {"remainingFraction": 0.1, "resetTime": iso_at(time.time() - 60)}},  # reset since: 0%
+    {"quotaInfo": {}}]}}
+au = B.antigravity_usage().get("antigravity:HED") or {}
+check("Antigravity: the most used model that hasn't reset counts", au.get("five_hour_pct") == 40 and au.get("five_hour_resets", "").startswith("2h"), au)
+check("Antigravity limits reach outside_usage", "antigravity:HED" in B.outside_usage())
+B._antigravity_status, B._AGY[:] = (lambda: None), [0.0, {}]
+check("Antigravity app closed: no numbers", B.antigravity_usage() == {})
+cards = B.accounts_view({}, ["HED", "ZED", ""])
+check("connected accounts without numbers get an unknown card", sorted(c["email"] for c in cards if c.get("unknown")) == ["HED", "ZED"], cards)
+B._antigravity_status = real_status
 
 # ---- team: a lead, roles, tasks assigned to one account ----
 with B.board(write=True) as b:
