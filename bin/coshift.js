@@ -396,10 +396,10 @@ const HOOK_CMD = 'sh "$CLAUDE_PROJECT_DIR/.claude/hooks/board-context.sh"';
 const AGENTS_BLOCK = `<!-- coshift:start -->
 ## Coshift board
 
-Several accounts (Claude Code and Codex, on the web, desktop or CLI) work on this repo together through the Coshift board.
+Several accounts (Claude Code, Codex and Antigravity, on the web, desktop or CLI) work on this repo together through the Coshift board.
 At the start of every session or task:
 
-- If you have the board's tools (claim_task, resume, ...), call \`resume\`.
+- If you have the board's tools (claim_task, resume, ...), call \`resume\` (Antigravity: pass this repo's absolute path as \`workspace\`).
 - Otherwise, if \`COSHIFT_URL\` and \`COSHIFT_TOKEN\` are set, run this and follow what it says:
   \`curl -sS "$COSHIFT_URL/api/help" -H "Authorization: Bearer $COSHIFT_TOKEN"\`
 - Otherwise, ignore this section.
@@ -417,7 +417,7 @@ function agentsInstall(dir = process.cwd()) {
       : (cur ? cur.trimEnd() + "\n\n" : "") + AGENTS_BLOCK + "\n";
     if (next !== cur) fs.writeFileSync(p, next);
   }
-  good(`Board pointer added to ${root} (AGENTS.md for Codex, CLAUDE.md for Claude Code)`);
+  good(`Board pointer added to ${root} (AGENTS.md for Codex and Antigravity, CLAUDE.md for Claude Code)`);
   info("Commit both files so web sessions get them. Write the instructions themselves on the board: Team → Shared instructions.");
 }
 
@@ -546,6 +546,9 @@ function doctor() {
   for (const n of knownAccounts().filter((x) => fs.existsSync(acctDir(x)) && isCodex(x)))
     check(spawnSync("codex", ["mcp", "get", "coshift"], { env: toolEnv(n), stdio: "ignore", shell: IS_WIN }).status === 0,
       `${n} (Codex) connected (MCP)`, `${n} (Codex) not connected: coshift login ${n} --codex`);
+  for (const n of knownAccounts().filter((x) => fs.existsSync(acctDir(x)) && isAntigravity(x)))
+    check(readJson(antigravityConfig(), {}).mcpServers?.coshift?.env?.COSHIFT_AS === n,
+      `${n} (Antigravity) connected (MCP)`, `${n} (Antigravity) not connected: coshift login ${n} --antigravity`);
   if (has("claude")) {
     const got = (n) => spawnSync("claude", ["mcp", "get", n], { encoding: "utf8", shell: IS_WIN }).status === 0;
     check(got("coshift") || got("team-board"), "Desktop sessions connected (MCP)", "Desktop sessions not connected: coshift setup → Connect this computer");
@@ -615,10 +618,14 @@ function knownAccounts() {
   return [...set];
 }
 const isCodex = (n) => fs.existsSync(path.join(acctDir(n), "config.toml"));
-const toolOf = (n) => (isCodex(n) ? "codex" : "claude");
+// Antigravity signs in inside its own app and reads one global MCP config, so its folder only holds this marker
+const isAntigravity = (n) => fs.existsSync(path.join(acctDir(n), "antigravity"));
+const toolOf = (n) => (isCodex(n) ? "codex" : isAntigravity(n) ? "antigravity" : "claude");
+const TOOL_LABEL = { codex: "Codex", antigravity: "Antigravity", claude: "Claude Code" };
 const toolEnv = (n) => ({ ...process.env, [isCodex(n) ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"]: acctDir(n), COSHIFT_AS: n });
 function acctEmail(n) {
   if (isCodex(n)) return fs.existsSync(path.join(acctDir(n), "auth.json")) ? "ChatGPT (Codex)" : "";  // presence only
+  if (isAntigravity(n)) return "Google (Antigravity)";
   const j = readJson(path.join(acctDir(n), ".claude.json"), {});
   return (j.oauthAccount && j.oauthAccount.emailAddress) || "";
 }
@@ -640,8 +647,9 @@ function headroom(u, st) {
 function pickAccount(tool) {
   const m = mappedAccount();
   if (m && (!tool || toolOf(m.name) === tool)) return { name: m.name, why: `mapped to ${m.dir}` };
-  const all = knownAccounts(), names = all.filter((n) => fs.existsSync(acctDir(n)) && (!tool || toolOf(n) === tool));
-  if (!names.length && tool === "codex") die(`No Codex account yet. Add one: ${c.cyan("coshift login NAME --codex")}`);
+  // Antigravity's limits are unknown and it's an app, so a plain `coshift run` never picks it
+  const all = knownAccounts(), names = all.filter((n) => fs.existsSync(acctDir(n)) && (tool ? toolOf(n) === tool : toolOf(n) !== "antigravity"));
+  if (!names.length && tool && tool !== "claude") die(`No ${TOOL_LABEL[tool]} account yet. Add one: ${c.cyan(`coshift login NAME --${tool}`)}`);
   if (!names.length) die(all.length  // known from the board or the desktop app, but no terminal sign-in here yet
     ? `${all.join(" and ")} ${all.length > 1 ? "are" : "is"} on the board, but not signed in to the Claude Code CLI on this computer yet\n    (the desktop app's sign-in is separate). Once per account: ${c.cyan(`coshift login ${all[0]}`)}`
     : `No accounts yet. Add one: ${c.cyan("coshift login ATLAS")}`);
@@ -667,6 +675,31 @@ function prepareCodex(n) {
   return dir;
 }
 
+// Antigravity's global MCP config (older versions: ~/.gemini/antigravity/mcp_config.json)
+function antigravityConfig() {
+  const g = path.join(os.homedir(), ".gemini");
+  return fs.existsSync(path.join(g, "config")) || !fs.existsSync(path.join(g, "antigravity"))
+    ? path.join(g, "config", "mcp_config.json") : path.join(g, "antigravity", "mcp_config.json");
+}
+function prepareAntigravity(n) {
+  const cfgPath = antigravityConfig();
+  let cfg = {};
+  try { const t = fs.readFileSync(cfgPath, "utf8"); if (t.trim()) cfg = JSON.parse(t); }
+  catch (e) { if (e.code !== "ENOENT") die(`Can't read ${cfgPath} (${e.message}). Fix it, then run this again.`); }
+  cfg.mcpServers = cfg.mcpServers || {};
+  const prev = cfg.mcpServers.coshift?.env?.COSHIFT_AS;
+  if (prev && prev !== n) warn(`Antigravity was connected as ${prev}; it's ${n} now (Antigravity has one sign-in per computer).`);
+  const pyExe = spawnSync(python()[0], [...python().slice(1), "-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
+  cfg.mcpServers.coshift = { command: pyExe, args: [path.join(HOME, "board.py"), "serve"],
+    env: { COSHIFT_AS: n, COSHIFT_TOOL: "antigravity", ...(process.env.COSHIFT_HOME ? { COSHIFT_HOME: process.env.COSHIFT_HOME } : {}) } };
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+  // the previous Antigravity account's folder holds only the marker; left behind it would look like a Claude Code one
+  for (const x of knownAccounts()) if (x !== n && isAntigravity(x)) fs.rmSync(acctDir(x), { recursive: true });
+  fs.mkdirSync(acctDir(n), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(acctDir(n), "antigravity"), "");
+}
+
 function prepareAccount(n) {
   const dir = acctDir(n);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -687,9 +720,19 @@ function prepareAccount(n) {
 
 async function login(args) {
   const codex = args.includes("--codex") || (args[0] && fs.existsSync(acctDir(args[0])) && isCodex(args[0]));
+  const agy = args.includes("--antigravity") || (args[0] && fs.existsSync(acctDir(args[0])) && isAntigravity(args[0]));
   const name = args.find((a) => !a.startsWith("-"));
   const n = (name || await input("Account name (e.g. ATLAS)")).toUpperCase();
   if (!/^[A-Z0-9_-]{1,20}$/.test(n) || n === "ADMIN") die("Account names: 1-20 letters, digits, - or _.");
+  if (agy) {
+    if (fs.existsSync(acctDir(n)) && !isAntigravity(n)) die(`${n} is a ${TOOL_LABEL[toolOf(n)]} account. Pick another name for the Antigravity one.`);
+    prepareAntigravity(n);
+    box([`${sym.dot} Connected ${c.bold(n)} (Antigravity)`, "",
+      `Sign in to the Antigravity app with the Google account you want as ${c.orange(n)},`,
+      "then restart Antigravity (or refresh its MCP servers) so it loads the board.",
+      `Board in ${c.dim(antigravityConfig())}`]);
+    return good(`${n} is set up for Antigravity. Open a repo in it: ${c.cyan(`coshift run ${n}`)}`);
+  }
   if (codex) {
     if (!has("codex")) die(`Codex isn't installed: ${c.cyan("npm i -g @openai/codex")} or ${c.cyan("brew install codex")}`);
     if (fs.existsSync(acctDir(n)) && !isCodex(n)) die(`${n} is a Claude Code account. Pick another name for the Codex one.`);
@@ -715,12 +758,14 @@ async function login(args) {
 
 function runAs(args) {
   // `coshift run codex` / `coshift run claude`: the account with most limit left among that tool's accounts only
-  const tool = ["codex", "claude"].includes(args[0]) && !knownAccounts().includes(args[0].toUpperCase()) ? args.shift() : null;
+  const tool = ["codex", "claude", "antigravity"].includes(args[0]) && !knownAccounts().includes(args[0].toUpperCase()) ? args.shift() : null;
   let name = args[0] && !args[0].startsWith("-") && knownAccounts().includes(args[0].toUpperCase()) ? args.shift().toUpperCase() : null;
   let why = "chosen";
   if (!name) ({ name, why } = pickAccount(tool));
   if (!fs.existsSync(acctDir(name))) die(`${name} isn't set up on this computer. Run: ${c.cyan(`coshift login ${name}`)}`);
-  console.log(`  ${sym.dot} ${c.bold(name)} ${c.dim(`· ${toolOf(name) === "codex" ? "Codex" : "Claude Code"} · ${why}${acctEmail(name) ? " · " + acctEmail(name) : ""}`)}`);
+  console.log(`  ${sym.dot} ${c.bold(name)} ${c.dim(`· ${TOOL_LABEL[toolOf(name)]} · ${why}${acctEmail(name) ? " · " + acctEmail(name) : ""}`)}`);
+  if (toolOf(name) === "antigravity")  // an app: open this folder in it; the board knows the account from its MCP config
+    process.exit(process.platform === "darwin" ? run("open", ["-a", "Antigravity", process.cwd()]) : run("antigravity", [process.cwd(), ...args]));
   process.exit(run(toolOf(name), args, { env: toolEnv(name) }));
 }
 
@@ -973,12 +1018,14 @@ ${c.dim("EVERY DAY")}
   ${c.cyan("coshift status [--full]")}       accounts and this repo's tasks at a glance
   ${c.cyan("coshift run [NAME]")}            start NAME, or the account with most limit left
   ${c.cyan("coshift run codex|claude")}      the same, only among Codex / Claude Code accounts
+  ${c.cyan("coshift run antigravity")}       open this folder in Antigravity as its account
   ${c.cyan("coshift open")}                  the board page
   ${c.cyan("coshift accounts")}              every account's limits, context window and sign-in
 
 ${c.dim("ACCOUNTS")}
   ${c.cyan("coshift login NAME")}            add an account (its own Claude Code sign-in)
   ${c.cyan("coshift login NAME --codex")}    add a ChatGPT account for Codex
+  ${c.cyan("coshift login NAME --antigravity")} connect Antigravity (one Google account per computer)
   ${c.cyan("coshift account rename A B")}    rename everywhere; its token keeps working
   ${c.cyan("coshift account add|rotate N")}  add an account to a Vercel board / new token
   ${c.cyan("coshift env NAME|admin")}        cloud variables for claude.ai/code (copied) / page key

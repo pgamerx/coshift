@@ -5,6 +5,7 @@ Everything beyond the [README](../README.md): setup paths, accounts, cloud sessi
 - [Setup](#setup)
 - [Accounts](#accounts)
 - [Codex (ChatGPT) accounts](#codex-chatgpt-accounts)
+- [Antigravity](#antigravity)
 - [Working with the board](#working-with-the-board)
 - [Team: a lead and roles](#team-a-lead-and-roles)
 - [Projects](#projects)
@@ -69,6 +70,18 @@ Each Codex account gets its own folder (`~/.coshift/accounts/NAME`, used as Code
 **Limits and context need no setup.** Codex writes the plan's 5-hour and weekly usage, and how full the context is, into its session log after every turn. Coshift reads just those numbers (never `auth.json`), so `coshift accounts`, the page and the stop lines work for Codex with no status line or reports. The pusher sends them to a Vercel board too.
 
 Codex shows the board protocol with the first `board_status`. Start a Codex session the same way: *Use the Coshift board and claim the next task.*
+
+
+## Antigravity
+
+```
+coshift login HEDWIG --antigravity   # adds the board to ~/.gemini/config/mcp_config.json as HEDWIG
+coshift run HEDWIG                   # opens this folder in Antigravity
+```
+
+Sign in to the Antigravity app with the Google account you want as that name, then restart Antigravity so it loads the board. Antigravity has one sign-in and one MCP config per computer, so there's one Antigravity account per computer; logging in another name replaces it. Antigravity runs its MCP servers outside your repo, so its agent passes the repo's path (`workspace`) to `resume` and `board_status`; `coshift agents` puts that in AGENTS.md, which Antigravity reads.
+
+**Limits need no setup** while the Antigravity app is open: Coshift asks the app's own local server for each model's quota (about 5 hours each) and counts the most used model, so `coshift accounts`, the page and the stop lines work for it. This uses an undocumented part of the app (macOS and Linux), so it's best effort: with the app closed, or after an update that changes it, the account shows as *Limits unknown*, it can still claim, and it's told to keep tasks small. `coshift run` never picks Antigravity on its own.
 
 ## Working with the board
 
