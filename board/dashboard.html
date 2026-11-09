@@ -412,6 +412,12 @@ function render(s) {
     const act = (s.activity || {})[n] || { sessions: 0 };  // every project, not just this one
     const ctx = ss.filter(x => x.context_pct != null).map(x => `<span class="${x.context_pct >= s.stop_context ? "stop" : x.context_pct >= s.stop_context - 15 ? "warn" : ""}">${x.context_pct}%</span>`).join(" ");
     const saved = (s.contexts || {})[u.email] || (s.contexts || {})[u.profile];
+    const foot = act.sessions ? `${act.sessions} session${act.sessions > 1 ? "s" : ""} · last action ${ago(act.last_min)}` : "no session in the last 3 hours";
+    if (u.unknown) return `<div class="card acct">
+      <div class="head"><span class="who"><span class="dot" style="background:${render.color(n)}"></span>${label}</span>
+        <span class="pill" title="connected, but its limits couldn't be read yet">Limits unknown</span></div>
+      <div class="mid"><div class="big muted">–<small>5-hour</small></div></div>
+      <div class="foot"><span>${foot}</span><span>limits not read yet</span></div></div>`;
     return `<div class="card acct">
       <div class="head"><span class="who"><span class="dot" style="background:${render.color(n)}"></span>${label}
         ${u.email ? `<button class="rename" data-act="rename" data-id="${esc(u.email)}" title="Rename this account everywhere" aria-label="Rename ${esc(u.email)}">✎</button>` : ""}</span>${status}</div>

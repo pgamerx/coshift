@@ -49,6 +49,7 @@ Then sign in each account once and start working:
 ```bash
 coshift login WORK              # each account gets its own Claude Code profile
 coshift login GPT --codex       # a ChatGPT account for Codex
+coshift login GEM --antigravity # Antigravity (one Google account per computer)
 coshift run                     # the account with the most limit left (Claude Code or Codex)
 ```
 

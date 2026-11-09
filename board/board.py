@@ -87,8 +87,9 @@ ME = (os.environ.get("COSHIFT_AS") or os.environ.get("CLAUDE_CODE_USER_EMAIL")
       or os.environ.get("CLAUDE_CODE_ACCOUNT_UUID") or "")
 if REMOTE.get("accounts", {}).get(ORG):
     ME = REMOTE["accounts"][ORG]  # same name the cloud uses for this account, e.g. ATLAS
-if not ORG and os.environ.get("COSHIFT_TOOL") == "codex" and ME:
-    ORG = f"codex:{ME.upper()}"  # Codex has no org id; its live limits are keyed like this (codex_usage)
+TOOL = os.environ.get("COSHIFT_TOOL", "")  # "codex" or "antigravity" when set by `coshift login`; else Claude Code
+if not ORG and TOOL in ("codex", "antigravity") and ME:
+    ORG = f"{TOOL}:{ME.upper()}"  # no org id; their live limits are keyed like this (tool_usage)
 SID = os.environ.get("CLAUDE_CODE_SESSION_ID") or f"pid{os.getpid()}"
 CWD = os.getcwd()
 # Which project's board: COSHIFT_PROJECT, else the git repo this runs in. A repo without its own project (made on the
@@ -98,11 +99,12 @@ MAIN = "default"
 SHARED = ("usage", "settings", "leases")  # about accounts and this machine, so the same on every project's board
 CURRENT = ""  # the project of the board last opened ("" = main)
 
-INSTRUCTIONS = f"""Shared task board for several AI coding accounts (Claude Code and Codex, two or more) working on the
+INSTRUCTIONS = f"""Shared task board for several AI coding accounts (Claude Code, Codex, Antigravity) working on the
 same project in parallel. You are one of them; the others work in their own sessions. Follow this protocol:
 1. Before starting work and after finishing each task, call get_usage (desktop app tool) and pass the
    plan numbers to report_usage. Claiming needs a report from the last {FRESH_MIN} minutes.
-   No get_usage tool (Codex, or Claude Code with the Coshift status line)? Skip this: the board reads your limits itself.
+   No get_usage tool (Codex, Antigravity, or Claude Code with the Coshift status line)? Skip this: the board reads
+   your limits itself.
 2. Call board_status, then claim_task to take the next open task (or a specific id). Work only on
    tasks you have claimed, so no two sessions ever do the same thing.
 3. While working, call add_note with short progress notes (what's done, what's next, files touched),
@@ -944,7 +946,7 @@ def touch_session(tool):
     return out
 
 
-TEAM_RULES = ("WORKING WITH THE OTHER ACCOUNTS (they may be Claude Code or Codex; treat them as colleagues):\n"
+TEAM_RULES = ("WORKING WITH THE OTHER ACCOUNTS (they may be Claude Code, Codex or Antigravity; treat them as colleagues):\n"
               "- Work on separate things. Never edit, revert, reformat or 'clean up' files that another account's running "
               "task owns, and don't redo work that's done without a task for it.\n"
               "- Think another account's work is wrong? add_note on its task (or ask_user); don't change it yourself.\n"
@@ -1025,7 +1027,7 @@ def reserved_for_other(b, t, me):
     return who and who != me and not over_limit(b["usage"].get(who))
 
 
-PROTOCOL_SHOWN = os.environ.get("COSHIFT_TOOL") != "codex"  # Claude Code shows the server instructions itself
+PROTOCOL_SHOWN = TOOL not in ("codex", "antigravity")  # Claude Code shows the server instructions itself
 
 
 def t_board_status(a):
@@ -1092,10 +1094,11 @@ def t_claim_task(a):
             u = live  # e.g. the Claude Usage app's live numbers, so no manual report is needed
         warn = ""
         if not u or now() - u["at"] > FRESH_MIN * 60:
-            if REQUIRE_USAGE:
+            if REQUIRE_USAGE and TOOL != "antigravity":  # its limits come only from the app, best effort
                 raise ValueError(f"report your usage first (get_usage, then report_usage); last report "
                                  f"{ago(u['at']) if u else 'never'}.")
-            warn = (f"WARNING: your usage is unknown (last update {ago(u['at']) if u else 'never'}; the user's Mac "
+            warn = ("Antigravity's limits couldn't be read from the app: keep tasks small and leave notes often.\n\n" if TOOL == "antigravity"
+                    else f"WARNING: your usage is unknown (last update {ago(u['at']) if u else 'never'}; the user's Mac "
                     "may be off). Keep tasks small and leave notes often.\n\n")
         flag = over_limit(u) if u else ""
         if flag:
@@ -1307,8 +1310,13 @@ def t_resume(a):
         return out + render(b, me)
 
 
+# Antigravity runs one MCP server for every workspace, from "/", so the session says which repo it's in.
+# shortcut: one folder per server process, the last one passed wins; per-call folders if two workspaces interleave.
+WORKSPACE_ARG = {"type": "string", "description": "Absolute path of the folder you're working in. Antigravity: always pass it."}
+
 TOOLS = {
-    "board_status": (t_board_status, "Show every account's usage and every task (claimed, open, recent done).", {}, []),
+    "board_status": (t_board_status, "Show every account's usage and every task (claimed, open, recent done).",
+                     {"workspace": WORKSPACE_ARG}, []),
     "report_usage": (t_report_usage, "Record this account's plan usage. Get the numbers from the get_usage tool "
                      "(5-hour limit and 'Weekly · all models'). Says STOP when you're near the limit.",
                      {"five_hour_pct": {"type": "integer"}, "weekly_pct": {"type": "integer"},
@@ -1357,13 +1365,15 @@ TOOLS = {
     "lease_port": (t_lease_port, "Get a port range for this session's dev servers and databases, so parallel "
                    "sessions never fight over the same port.", {}, []),
     "resume": (t_resume, "Start of a new session: returns this account's last saved context summary, your claimed "
-               "tasks with notes, guidance, and the board.", {}, []),
+               "tasks with notes, guidance, and the board.", {"workspace": WORKSPACE_ARG}, []),
 }
 
 
 def run_tool(name, args):
-    global ME
+    global ME, CWD
     ME = canon(ME)
+    if isinstance(args.get("workspace"), str) and os.path.isabs(args["workspace"]):
+        CWD = args["workspace"]
     try:
         text, err = TOOLS[name][0](args), False
     except (ValueError, KeyError, TypeError) as e:
@@ -1612,6 +1622,79 @@ def codex_usage():
     return out
 
 
+_AGY = [0.0, {}]  # (when, result): one lookup a minute is plenty
+
+
+def _antigravity_status():
+    """GetUserStatus from the running Antigravity app's local language server: its address is a 127.0.0.1 port the
+    process listens on, its token the --csrf_token in its command line. Undocumented, so best effort: None if it fails.
+    shortcut: finds the process with ps and lsof (macOS, Linux); Windows needs another lookup."""
+    try:
+        procs = subprocess.run(["ps", "ax", "-o", "pid=,args="], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    import ssl
+    ctx = ssl._create_unverified_context()  # its own self-signed certificate, on 127.0.0.1 only
+    for line in procs.splitlines():
+        m = re.match(r"\s*(\d+)\s+\S*language_server\S*\s.*--csrf_token[ =](\S+)", line)
+        if not m or "antigravity" not in line.lower():
+            continue
+        try:
+            ls = subprocess.run(["lsof", "-nP", "-a", "-p", m[1], "-iTCP", "-sTCP:LISTEN", "-Fn"],
+                                capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for port in re.findall(r"n127\.0\.0\.1:(\d+)", ls):
+            req = urllib.request.Request(
+                f"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus", data=b"{}",
+                headers={"Content-Type": "application/json", "Connect-Protocol-Version": "1",
+                         "x-codeium-csrf-token": m[2]})
+            try:
+                with urllib.request.urlopen(req, timeout=2, context=ctx) as r:
+                    return json.load(r).get("userStatus")
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def antigravity_usage():
+    """Live limits of this computer's Antigravity account (its folder holds the "antigravity" marker), keyed
+    "antigravity:NAME". Each model has its own ~5-hour quota; the most used one counts, so no model runs dry."""
+    try:
+        names = [n for n in sorted(os.listdir(ACCTS)) if os.path.exists(os.path.join(ACCTS, n, "antigravity"))]
+    except OSError:
+        names = []
+    if not names:
+        return {}
+    if now() - _AGY[0] < 60:
+        return _AGY[1]
+    st, out = _antigravity_status(), {}
+    if st:
+        u = {"profile": names[0].upper(), "five_hour_pct": 0, "weekly_pct": 0, "five_hour_resets": "",
+             "weekly_resets": "", "at": now(), "source": "antigravity"}
+        for m in (st.get("cascadeModelConfigData") or {}).get("clientModelConfigs") or []:
+            q = m.get("quotaInfo") or {}
+            if "remainingFraction" not in q:
+                continue
+            try:
+                reset = datetime.fromisoformat(q.get("resetTime", "").replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                reset = 0
+            if reset and reset <= now():
+                continue  # that model's window reset since: 0% used
+            pct = round(100 * (1 - float(q["remainingFraction"])))
+            if pct >= u["five_hour_pct"]:
+                u["five_hour_pct"], u["five_hour_resets"] = pct, resets_in(reset) if reset else ""
+        out[f"antigravity:{names[0].upper()}"] = u
+    _AGY[:] = [now(), out]
+    return out
+
+
+def tool_usage():
+    """Codex and Antigravity accounts' live limits, read from the tools themselves."""
+    return {**codex_usage(), **antigravity_usage()}
+
+
 def outside_usage():
     """Newest usage per org from outside the board: the Claude Usage app, else the desktop app's own samples,
     plus Codex accounts' own logs."""
@@ -1622,12 +1705,13 @@ def outside_usage():
         label = best.get(org, {}).get("profile") or u["profile"]  # keep the menu bar's display name
         if org not in best or u["at"] > best[org]["at"]:
             best[org] = dict(u, profile=label)
-    best.update(codex_usage())
+    best.update(tool_usage())
     return best
 
 
-def accounts_view(usage):
-    """One card per account: whichever is newest of the session's own report and the outside sources."""
+def accounts_view(usage, connected=()):
+    """One card per account: whichever is newest of the session's own report and the outside sources. Accounts in
+    `connected` with no numbers at all get a card too, marked unknown, so every connected account shows."""
     apps, cards = outside_usage(), []
     for email, u in usage.items():
         app = apps.pop(u.get("org"), None) if u.get("org") else None
@@ -1637,7 +1721,18 @@ def accounts_view(usage):
     cards += [dict(a, email="") for a in apps.values()]
     for c in cards:
         c["stop"], c["age_min"] = over_limit(c), int((now() - c["at"]) // 60)
+    have = {(c.get("email") or c.get("profile") or "").upper() for c in cards}
+    for n in sorted({str(n).upper() for n in connected if n} - have):
+        cards.append({"email": n, "profile": "", "unknown": True, "source": "", "stop": "", "age_min": None})
     return cards
+
+
+def local_accounts():
+    """Accounts set up on this computer with `coshift login` (one folder each)."""
+    try:
+        return [n for n in os.listdir(ACCTS) if os.path.isdir(os.path.join(ACCTS, n))]
+    except OSError:
+        return []
 
 
 def project_summaries(boards=None):
@@ -1695,7 +1790,7 @@ def _web_state():
                           key=lambda x: x["last"], reverse=True)
         tasks = [dict({k: v for k, v in t.items() if not k.startswith("_")}, stale=t["status"] == "claimed" and now() - last_seen(b, t) > STALE_CLAIM_MIN * 60,
                       blocked=blockers(b, t) if t["status"] == "open" else []) for t in b["tasks"]]
-        return {"stop_5h": STOP_5H, "stop_week": STOP_WEEK, "usage": usage, "accounts": accounts_view(b["usage"]),
+        return {"stop_5h": STOP_5H, "stop_week": STOP_WEEK, "usage": usage, "accounts": accounts_view(b["usage"], [v.get("account") for v in b["sessions"].values()] + local_accounts()),
                 "sessions": sessions,
                 "settings": dict(settings_of(b), context_windows=b.get("settings", {}).get("context_windows", {})),
                 "tasks": tasks, "messages": b["messages"][-20:],
@@ -1881,7 +1976,7 @@ def push_usage():
     """Copies every account's live usage (Claude Usage app / desktop app) into the shared board,
     under the account names from remote.json. Run every minute by a LaunchAgent on the Mac."""
     names = {org: canon(n) for org, n in REMOTE.get("accounts", {}).items()}
-    names.update({org: canon(u["profile"]) for org, u in codex_usage().items()})
+    names.update({org: canon(u["profile"]) for org, u in tool_usage().items()})
     live = {names[org]: u for org, u in outside_usage().items() if org in names}
     if not live:
         print("no usage found for the accounts in remote.json")
@@ -1997,9 +2092,9 @@ def cli(argv):
                 print("usage: board.py settings [set <key> <value>]")
                 return 1
     elif cmd == "usage-json":
-        codex = {canon(u["profile"]): u for u in codex_usage().values()}  # canon locks too: outside the board
+        codex = {canon(u["profile"]): u for u in tool_usage().values()}  # canon locks too: outside the board
         with board() as b:
-            for name, u in codex.items():  # so `coshift run` sees Codex limits without any session reporting
+            for name, u in codex.items():  # so `coshift run` sees these limits without any session reporting
                 if name not in b["usage"] or u["at"] > b["usage"][name]["at"]:
                     b["usage"][name] = u
             print(json.dumps({"usage": b["usage"], "settings": settings_of(b),
