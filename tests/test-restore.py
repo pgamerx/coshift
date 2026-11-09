@@ -13,10 +13,16 @@ os.makedirs(BIN)
 old = {"admin": "tok-admin", "WORK": "tok-work", "GPT": "tok-gpt"}
 dotenv = ('KV_REST_API_URL="https://x.upstash.io"\nKV_REST_API_TOKEN="rtok"\n'
           f'COSHIFT_TOKENS="{json.dumps({t: n for n, t in old.items()}).replace(chr(34), chr(92) + chr(34))}"\n')
-fake = os.path.join(BIN, "vercel")
+fake = os.path.join(BIN, "fake_vercel.py")
 with open(fake, "w") as f:  # `vercel env pull FILE --yes --environment production` writes FILE
-    f.write(f"#!/bin/sh\n[ \"$1 $2\" = \"env pull\" ] && printf '%s' '{dotenv}' > \"$3\"\n")
-os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+    f.write(f"import sys\nif sys.argv[1:3] == ['env', 'pull']: open(sys.argv[3], 'w').write({dotenv!r})\n")
+if os.name == "nt":
+    with open(os.path.join(BIN, "vercel.cmd"), "w") as f:
+        f.write(f'@"{sys.executable}" "{fake}" %*\n')
+else:
+    with open(os.path.join(BIN, "vercel"), "w") as f:
+        f.write(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+    os.chmod(os.path.join(BIN, "vercel"), 0o755)
 
 env = {**os.environ, "PATH": BIN + os.pathsep + os.environ["PATH"], "COSHIFT_HOME": HOME}
 r = subprocess.run([sys.executable, os.path.join(APP, "scripts", "setup.py"), "--restore", "--url",
@@ -34,7 +40,7 @@ check("tokens.json is the old tokens", json.load(open(os.path.join(HOME, "tokens
 rem = json.load(open(os.path.join(HOME, "remote.json")))
 check("remote.json points at the same board and Redis",
       rem["url"] == "https://my-board.vercel.app" and rem["redis_token"] == "rtok" and rem["mode"] == "vercel", rem)
-check("tokens.json is private", stat.S_IMODE(os.stat(os.path.join(HOME, "tokens.json")).st_mode) == 0o600)
+check("tokens.json is private", os.name == "nt" or stat.S_IMODE(os.stat(os.path.join(HOME, "tokens.json")).st_mode) == 0o600)
 check("pulled env file is deleted", not os.path.exists(os.path.join(APP, ".env.production.local")))
 shutil.rmtree(TMP)
 sys.exit(1 if fails else 0)

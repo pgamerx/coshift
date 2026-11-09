@@ -71,7 +71,8 @@ def ask(q, default=""):
 
 
 def vercel(*args, **kw):
-    return subprocess.run(["vercel", *args], cwd=REPO, text=True, capture_output=True, **kw)
+    # which() finds vercel.cmd on Windows, which a bare "vercel" never does without shell=True
+    return subprocess.run([shutil.which("vercel") or "vercel", *args], cwd=REPO, text=True, capture_output=True, **kw)
 
 
 def parse_names(raw):
