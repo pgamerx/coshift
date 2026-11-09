@@ -5,7 +5,9 @@
     python3 scripts/setup.py --local         # board on this computer only, no Vercel
 
 Flags (the wizard passes these): --names A,B  --url URL  --map ORG=NAME (repeatable)  --local  --json
-                                 --new-tokens  --add NAME  --rotate NAME
+                                 --new-tokens  --add NAME  --rotate NAME  --restore
+--restore (new computer): reads the tokens and Redis credentials back from the linked Vercel project; nothing new
+is created and nothing in Vercel changes.
 It creates one secret token per account (plus an admin token for the page), stores them in Vercel, connects
 this computer to the shared board, and writes what to paste into each cloud environment to
 ~/.coshift/cloud-setup.txt. Safe to re-run: existing tokens are kept unless you pass --new-tokens.
@@ -37,7 +39,7 @@ class Args:
         self.flags, self.maps, i = {}, {}, 0
         while i < len(argv):
             a = argv[i]
-            if a in ("--local", "--json", "--new-tokens"):
+            if a in ("--local", "--json", "--new-tokens", "--restore"):
                 self.flags[a] = True
             elif a in ("--names", "--url", "--add", "--rotate", "--map") and i + 1 < len(argv):
                 i += 1
@@ -167,6 +169,47 @@ def change_token(tokens, tok_path):
     return finish({"mode": "vercel", "changed": name, "setup_txt": path, "accounts": [n for n in tokens if n != "admin"]})
 
 
+def pull_env():
+    """The linked project's production variables (COSHIFT_TOKENS lives in production and preview, not development)."""
+    env_file = os.path.join(REPO, ".env.production.local")
+    r = vercel("env", "pull", env_file, "--yes", "--environment", "production")
+    if r.returncode or not os.path.exists(env_file):
+        sys.exit(f"vercel env pull failed: {r.stderr.strip()[-300:]}")
+    with open(env_file, encoding="utf-8") as f:
+        text = f.read()
+    os.remove(env_file)  # holds every secret; remote.json/tokens.json keep what we need
+    return {k: v.replace('\\"', '"') for k, v in re.findall(r'^([A-Z0-9_]+)="(.*)"$', text, re.M)}
+
+
+def restore():
+    """New computer, same Vercel board: bring back tokens and the Redis link instead of making new ones."""
+    env = pull_env()
+    try:
+        by_token = json.loads(env.get("COSHIFT_TOKENS") or env.get("TEAM_BOARD_TOKENS") or "")
+    except ValueError:
+        by_token = {}
+    if not by_token:
+        sys.exit("No COSHIFT_TOKENS in this Vercel project (or it's marked Sensitive, which Vercel won't hand back). "
+                 "Copy ~/.coshift/tokens.json from the old computer, or run coshift setup to make new tokens.")
+    if not env.get("KV_REST_API_URL") or not env.get("KV_REST_API_TOKEN"):
+        sys.exit("No Upstash credentials in this Vercel project. Is it the right project? (vercel link)")
+    tokens = {n: t for t, n in by_token.items()}
+    accounts = [n for n in tokens if n != "admin"]
+    tok_path = os.path.join(HOME, "tokens.json")
+    write_private(tok_path, json.dumps(tokens, indent=1))
+    remote_path = os.path.join(HOME, "remote.json")
+    remote = read_json(remote_path, {})
+    url = (ARGS.get("--url") or ask("Your board's URL", remote.get("url") or "https://<project>.vercel.app")).rstrip("/")
+    remote.update(mode="vercel", url=url, redis_url=env["KV_REST_API_URL"], redis_token=env["KV_REST_API_TOKEN"],
+                  accounts=map_accounts(remote, accounts))
+    write_private(remote_path, json.dumps(remote, indent=1))
+    link = link_board()
+    setup_txt = write_cloud_setup(url, tokens)
+    say(f"Restored {', '.join(accounts)} from Vercel. Board: {url}")
+    return finish({"mode": "vercel", "restored": True, "accounts": accounts, "url": url, "setup_txt": setup_txt,
+                   "mapped": remote["accounts"], "link": link, "python": sys.executable})
+
+
 def main():
     os.makedirs(HOME, mode=0o700, exist_ok=True)
     if ARGS.get("--local"):
@@ -174,6 +217,8 @@ def main():
     if not os.path.isdir(os.path.join(REPO, ".vercel")):
         sys.exit("Link the Vercel project first: vercel link   (then add Upstash, see README). "
                  "Or keep the board on this computer: --local")
+    if ARGS.get("--restore"):
+        return restore()
 
     tok_path = os.path.join(HOME, "tokens.json")
     tokens = {} if ARGS.get("--new-tokens") else read_json(tok_path, {})

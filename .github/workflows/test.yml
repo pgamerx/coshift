@@ -19,6 +19,7 @@ jobs:
       - run: python tests/test-features.py
       - run: python tests/test-cloud.py
       - run: python tests/test-redis.py
+      - run: python tests/test-restore.py
       - name: Linux tray summary
         if: runner.os == 'Linux'
         run: python tray/coshift-tray-linux.py --once || true

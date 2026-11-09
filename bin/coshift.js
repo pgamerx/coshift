@@ -199,7 +199,9 @@ async function setup(args) {
   const host = await select("Host the board where?", [
     { label: "Vercel", value: "vercel", hint: "free · recommended · open it from any device, works with cloud sessions" },
     { label: "This computer only", value: "local", hint: "no account needed · this machine only" },
+    { label: "Restore from my Vercel board", value: "restore", hint: "new computer · same board, accounts and tasks" },
   ]);
+  if (host === "restore") return restoreSetup(args);
   if (host === "local") {
     box([
       `${sym.warn} ${c.bold("This computer only")}`,
@@ -338,6 +340,48 @@ async function setup(args) {
     `  3. Start more sessions on other accounts with: ${c.dim("Use the Coshift board and claim the next task.")}`,
     "", `Everything else: ${c.cyan("coshift")}  (menu)   ·   check the setup: ${c.cyan("coshift doctor")}`);
   box(lines);
+  console.log();
+}
+
+// New computer, existing Vercel board: link the same project, pull its tokens and Redis link, reconnect this machine.
+// Tasks, projects, settings and context windows already live in the board's Redis, so nothing is re-asked.
+async function restoreSetup(args) {
+  if (!has("vercel")) die(`The Vercel CLI isn't installed. Install it with ${c.cyan("npm i -g vercel")}, then run ${c.cyan("coshift setup")} again.`);
+  step(3, 4, "Find your board on Vercel");
+  syncApp();
+  const here = { cwd: APP };
+  if (spawnSync("vercel", ["whoami"], { stdio: "ignore", timeout: 30000, shell: IS_WIN }).status !== 0) {
+    info("Sign in to Vercel with the account that owns your board…");
+    if (run("vercel", ["login"])) die("Vercel sign-in didn't finish. Run vercel login, then coshift setup.");
+  }
+  if (!fs.existsSync(path.join(APP, ".vercel"))) {
+    info(`Pick ${c.bold("your existing board project")} when asked ("Link to existing project?" → yes).`);
+    if (run("vercel", ["link"], here)) die("vercel link failed.");
+  }
+  const url = await input("Board address", remote().url || projectUrl());
+  info("Pulling your accounts and storage from Vercel…");
+  const detected = (() => { try { return JSON.parse(pyOut(BOARD, ["detect-accounts"]).out || "{}"); } catch { return {}; } })();
+  const orgs = Object.entries(detected).filter(([org]) => !org.startsWith("codex:"));
+  const r = pyOut(path.join(APP, "scripts", "setup.py"), ["--restore", "--url", url, "--json", ...args],
+    { cwd: APP, env: { ...process.env, COSHIFT_CLI: "1" } });
+  if (r.code) die(r.err || "restore failed");
+  const result = JSON.parse(r.out);
+  good(`Restored ${result.accounts.join(", ")} · board at ${c.cyan(result.url)}`);
+
+  step(4, 4, "Connect this computer");
+  if (has("claude") && (await confirm("Connect Claude Code sessions on this computer to the board?", true))) {
+    const m = run("claude", ["mcp", "add", "--scope", "user", "coshift", "--", result.python, result.link, "serve"], { stdio: "ignore" });
+    m === 0 ? good("Desktop sessions connected") : warn("Couldn't add it; it may already be there. Check: claude mcp list");
+  }
+  if (orgs.length && (await confirm("Send this computer's live usage (5-hour and weekly %) to the board every minute?", true))) {
+    await pusher("install");
+  }
+  console.log();
+  box([`${sym.ok} ${c.bold("Coshift is restored")}`, "",
+    `Board      ${c.cyan(result.url)}`, `Page key   ${c.cyan("coshift env admin")}`, "",
+    c.bold("Sign each account in again on this computer (sign-ins never leave a machine):"),
+    ...result.accounts.map((n) => `  ${c.cyan(`coshift login ${n}`)}   ${c.dim("(add --codex for a ChatGPT account)")}`),
+    "", `Cloud environments keep working: same tokens. Check everything: ${c.cyan("coshift doctor")}`]);
   console.log();
 }
 
