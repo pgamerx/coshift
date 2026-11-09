@@ -39,6 +39,7 @@ Coshift turns that into a shift change: whoever comes on picks up exactly where 
 
 ```bash
 npm install -g coshift          # or: brew install pgamerx/tap/coshift
+# or straight from GitHub: npm install -g github:pgamerx/coshift
 coshift setup
 ```
 
