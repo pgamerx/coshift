@@ -120,6 +120,27 @@ def push_tokens(tokens):
             sys.exit(f"vercel env add failed ({env}): {r.stderr.strip()[-300:]}")
 
 
+def board_redis(url, token):
+    """board.py's Redis client, pointed at this board's storage."""
+    import board
+    board.REDIS_URL, board.REDIS_TOKEN = url, token
+    return board
+
+
+def backup_tokens(url, token, tokens, replace=False):
+    """Merges these into the board's own Redis copy (cs:tokens): `coshift setup` → Restore reads it back, since Vercel
+    never hands back a Sensitive COSHIFT_TOKENS, and the board accepts its tokens too. Whoever holds the Redis
+    credentials can already read and write the whole board, so this adds no access."""
+    try:
+        r = board_redis(url, token)
+        old = {} if replace else json.loads(r.redis("GET", "cs:tokens") or "{}")
+        r.redis("SET", "cs:tokens", json.dumps({**old, **tokens}))
+        return True
+    except Exception as e:
+        say(f"(couldn't save the tokens to the board's storage: {e})")
+        return False
+
+
 def write_cloud_setup(url, tokens):
     accounts = [n for n in tokens if n != "admin"]
     host = url.split("//")[-1].split("/")[0]
@@ -162,9 +183,18 @@ def change_token(tokens, tok_path):
     if ARGS.get("--rotate") and name not in tokens:
         sys.exit(f"no account {name}. Accounts: {', '.join(n for n in tokens if n != 'admin')}")
     tokens[name] = secrets.token_urlsafe(32)
+    remote = read_json(os.path.join(HOME, "remote.json"), {})
+    if remote.get("tokens") == "board":  # restored without COSHIFT_TOKENS: rewriting it would cut off the others
+        if not backup_tokens(remote["redis_url"], remote["redis_token"], {name: tokens[name]}):
+            sys.exit("couldn't save the token to the board's storage; nothing changed")
+        if ARGS.get("--rotate"):
+            say(f"Note: if {name}'s old token is in Vercel's COSHIFT_TOKENS, it keeps working too.")
+    else:
+        push_tokens(tokens)
+        if remote.get("redis_url"):
+            backup_tokens(remote["redis_url"], remote["redis_token"], tokens)
     write_private(tok_path, json.dumps(tokens, indent=1))
-    push_tokens(tokens)
-    url = read_json(os.path.join(HOME, "remote.json"), {}).get("url", "https://<project>.vercel.app")
+    url = remote.get("url", "https://<project>.vercel.app")
     path = write_cloud_setup(url, tokens)
     say(f"{'Added' if ARGS.get('--add') else 'New token for'} {name}. Redeploy, then update its cloud environment.")
     return finish({"mode": "vercel", "changed": name, "setup_txt": path, "accounts": [n for n in tokens if n != "admin"]})
@@ -183,32 +213,45 @@ def pull_env():
 
 
 def restore():
-    """New computer, same Vercel board: bring back tokens and the Redis link instead of making new ones."""
+    """New computer, same Vercel board: bring back the Redis link and the tokens (from Vercel, else the board's copy).
+    Neither has them (a Sensitive COSHIFT_TOKENS from before the copy existed): a new page key for this computer, kept
+    in the board's storage, and accounts added here go there too. COSHIFT_TOKENS is never touched, so every
+    existing cloud session keeps working."""
     env = pull_env()
-    try:
-        by_token = json.loads(env.get("COSHIFT_TOKENS") or env.get("TEAM_BOARD_TOKENS") or "")
-    except ValueError:
-        by_token = {}
-    if not by_token:
-        sys.exit("No COSHIFT_TOKENS in this Vercel project (or it's marked Sensitive, which Vercel won't hand back). "
-                 "Copy ~/.coshift/tokens.json from the old computer, or run coshift setup to make new tokens.")
     if not env.get("KV_REST_API_URL") or not env.get("KV_REST_API_TOKEN"):
         sys.exit("No Upstash credentials in this Vercel project. Is it the right project? (vercel link)")
-    tokens = {n: t for t, n in by_token.items()}
-    accounts = [n for n in tokens if n != "admin"]
-    tok_path = os.path.join(HOME, "tokens.json")
-    write_private(tok_path, json.dumps(tokens, indent=1))
+    kv_url, kv_token = env["KV_REST_API_URL"], env["KV_REST_API_TOKEN"]
     remote_path = os.path.join(HOME, "remote.json")
     remote = read_json(remote_path, {})
+    remote.pop("tokens", None)
+    try:
+        tokens = {n: t for t, n in json.loads(env.get("COSHIFT_TOKENS") or env.get("TEAM_BOARD_TOKENS") or "").items()}
+    except ValueError:
+        tokens = {}
+    if tokens:
+        backup_tokens(kv_url, kv_token, tokens)
+    else:
+        try:
+            tokens = json.loads(board_redis(kv_url, kv_token).redis("GET", "cs:tokens") or "{}")
+        except Exception as e:
+            sys.exit(f"Couldn't reach the board's storage: {e}")
+        if "admin" not in tokens:  # not the whole set: add accounts through the board's storage from now on
+            remote["tokens"] = "board"
+            tokens["admin"] = secrets.token_urlsafe(32)
+            if not backup_tokens(kv_url, kv_token, {"admin": tokens["admin"]}):
+                sys.exit("couldn't save a page key to the board's storage")
+    accounts = [n for n in tokens if n != "admin"]
+    write_private(os.path.join(HOME, "tokens.json"), json.dumps(tokens, indent=1))
     url = (ARGS.get("--url") or ask("Your board's URL", remote.get("url") or "https://<project>.vercel.app")).rstrip("/")
-    remote.update(mode="vercel", url=url, redis_url=env["KV_REST_API_URL"], redis_token=env["KV_REST_API_TOKEN"],
-                  accounts=map_accounts(remote, accounts))
+    remote.update(mode="vercel", url=url, redis_url=kv_url, redis_token=kv_token, accounts=map_accounts(remote, accounts))
     write_private(remote_path, json.dumps(remote, indent=1))
     link = link_board()
     setup_txt = write_cloud_setup(url, tokens)
-    say(f"Restored {', '.join(accounts)} from Vercel. Board: {url}")
-    return finish({"mode": "vercel", "restored": True, "accounts": accounts, "url": url, "setup_txt": setup_txt,
-                   "mapped": remote["accounts"], "link": link, "python": sys.executable})
+    board_only = remote.get("tokens") == "board"
+    say(f"Connected to {url}" + (" with a new page key (your existing tokens stay as they are)." if board_only
+                                 else f": {', '.join(accounts)}."))
+    return finish({"mode": "vercel", "restored": True, "board_tokens": board_only, "accounts": accounts, "url": url,
+                   "setup_txt": setup_txt, "mapped": remote["accounts"], "link": link, "python": sys.executable})
 
 
 def main():
@@ -256,7 +299,9 @@ def main():
            remote.get("url") or os.environ.get("COSHIFT_DEFAULT_URL") or "https://<project>.vercel.app")).rstrip("/")
     remote.update(mode="vercel", url=url, redis_url=kv["KV_REST_API_URL"], redis_token=kv["KV_REST_API_TOKEN"],
                   accounts=map_accounts(remote, accounts))
+    remote.pop("tokens", None)  # a full setup pushed every token to COSHIFT_TOKENS
     write_private(remote_path, json.dumps(remote, indent=1))
+    backup_tokens(kv["KV_REST_API_URL"], kv["KV_REST_API_TOKEN"], tokens, replace=True)  # the whole set
 
     link = link_board()
     setup_txt = write_cloud_setup(url, tokens)

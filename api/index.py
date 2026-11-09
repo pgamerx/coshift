@@ -1,7 +1,8 @@
 """Hosted Coshift board (Vercel). Same board as board/board.py, stored in Upstash Redis.
 
 Auth: every API call needs "Authorization: Bearer <token>". COSHIFT_TOKENS (env, JSON) maps each
-token to who it is: "ATLAS", "FORGE" (cloud sessions) or "admin" (the board page and the Mac).
+token to who it is: "ATLAS", "FORGE" (cloud sessions) or "admin" (the board page and the Mac). Tokens in the board's
+own Redis (cs:tokens, name -> token) count too: a computer restored without the env's values adds accounts there.
 """
 import hmac, json, os, sys, threading, urllib.parse
 from http.server import BaseHTTPRequestHandler
@@ -13,6 +14,20 @@ import board as B  # noqa: E402
 TOKENS = json.loads(os.environ.get("COSHIFT_TOKENS") or os.environ.get("TEAM_BOARD_TOKENS") or "{}")
 # Boards set up before the rename keep their names: cloud sessions there have TEAM_BOARD_URL/TEAM_BOARD_TOKEN.
 LEGACY = not os.environ.get("COSHIFT_TOKENS") and bool(os.environ.get("TEAM_BOARD_TOKENS"))
+
+
+_BOARD_TOKENS = [0.0, {}]  # fetched at, token -> name
+
+
+def tokens():
+    """COSHIFT_TOKENS plus the board's own (cs:tokens), re-read at most every 30s."""
+    if B.now() - _BOARD_TOKENS[0] > 30:
+        try:
+            _BOARD_TOKENS[1] = {t: n for n, t in json.loads(B.redis("GET", "cs:tokens") or "{}").items()}
+            _BOARD_TOKENS[0] = B.now()
+        except (OSError, ValueError):
+            pass  # storage hiccup: the env's tokens still work
+    return {**_BOARD_TOKENS[1], **TOKENS}
 
 
 def env_names(text):
@@ -103,6 +118,9 @@ class handler(BaseHTTPRequestHandler):
         for tok, name in TOKENS.items():
             if got and hmac.compare_digest(got, tok):
                 return name if name == "admin" else B.canon(name)  # a renamed account keeps its token
+        for tok, name in tokens().items():  # only a token the env doesn't know reaches storage
+            if got and hmac.compare_digest(got, tok):
+                return name if name == "admin" else B.canon(name)
         return None
 
     def body(self):
@@ -135,11 +153,11 @@ class handler(BaseHTTPRequestHandler):
             with LOCK:
                 self.project()
                 st = B.web_state()
-            st["cloud_accounts"] = sorted(n for n in TOKENS.values() if n != "admin")
+            st["cloud_accounts"] = sorted({n for n in tokens().values() if n != "admin"})
             return self.send(200, st)
         if path == "/api/env" and who == "admin":  # an account's cloud variables, for the setup checklist
             name = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("account") or [""])[0]
-            tok = next((t for t, n in TOKENS.items() if n == name and n != "admin"), None)
+            tok = next((t for t, n in tokens().items() if n == name and n != "admin"), None)
             if not tok:
                 return self.send(404, {"error": "no such account"})
             url = "https://" + (self.headers.get("Host") or "")

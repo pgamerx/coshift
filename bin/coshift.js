@@ -366,7 +366,13 @@ async function restoreSetup(args) {
     { cwd: APP, env: { ...process.env, COSHIFT_CLI: "1" } });
   if (r.code) die(r.err || "restore failed");
   const result = JSON.parse(r.out);
-  good(`Restored ${result.accounts.join(", ")} · board at ${c.cyan(result.url)}`);
+  if (result.board_tokens) {
+    good(`Connected to ${c.cyan(result.url)}`);
+    info("Vercel keeps your account tokens hidden, so this computer got its own page key instead. Your existing");
+    info("tokens and cloud sessions stay exactly as they are; accounts you add here get their tokens the same way.");
+    info("Updating the board so it accepts them…");
+    if (deployBoard({ quiet: true })) process.exit(1);
+  } else good(`Restored ${result.accounts.join(", ")} · board at ${c.cyan(result.url)}`);
 
   step(4, 4, "Connect this computer");
   if (has("claude") && (await confirm("Connect Claude Code sessions on this computer to the board?", true))) {
@@ -379,9 +385,10 @@ async function restoreSetup(args) {
   console.log();
   box([`${sym.ok} ${c.bold("Coshift is restored")}`, "",
     `Board      ${c.cyan(result.url)}`, `Page key   ${c.cyan("coshift env admin")}`, "",
-    c.bold("Sign each account in again on this computer (sign-ins never leave a machine):"),
-    ...result.accounts.map((n) => `  ${c.cyan(`coshift login ${n}`)}   ${c.dim("(add --codex for a ChatGPT account)")}`),
-    "", `Cloud environments keep working: same tokens. Check everything: ${c.cyan("coshift doctor")}`]);
+    ...(result.accounts.length ? [c.bold("Sign each account in again on this computer (sign-ins never leave a machine):"),
+      ...result.accounts.map((n) => `  ${c.cyan(`coshift login ${n}`)}   ${c.dim("(add --codex for a ChatGPT account)")}`), ""] : []),
+    `New account: ${c.cyan("coshift account add NAME")}   ·   cloud sessions keep working as they are`,
+    `Check everything: ${c.cyan("coshift doctor")}`]);
   console.log();
 }
 
