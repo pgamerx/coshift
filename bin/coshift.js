@@ -1109,10 +1109,16 @@ const newer = (a, b) => {  // is version a newer than b?
   for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
   return false;
 };
+// The newer of npm's latest and GitHub's latest release (made only after the tests pass), so a slow or failing npm
+// doesn't hide a new version. Either one answering is enough.
 function latestVersion() {
-  const r = spawnSync(process.execPath, ["-e", `fetch("https://registry.npmjs.org/coshift/latest").then(r=>r.json()).then(j=>console.log(j.version)).catch(()=>process.exit(1))`],
-    { encoding: "utf8", timeout: 15000 });
-  return r.status === 0 ? r.stdout.trim() : "";
+  const r = spawnSync(process.execPath, ["-e", `const get = (u, f) => fetch(u, { headers: { "User-Agent": "coshift" } })
+    .then((r) => r.ok ? r.json() : {}).then(f).catch(() => "");
+  Promise.all([get("https://registry.npmjs.org/coshift/latest", (j) => j.version || ""),
+    get("https://api.github.com/repos/pgamerx/coshift/releases/latest", (j) => (j.tag_name || "").replace(/^v/, ""))])
+    .then((v) => console.log(v.join(" ")))`], { encoding: "utf8", timeout: 15000 });
+  const found = (r.stdout || "").trim().split(/\s+/).filter((v) => /^\d+\.\d+\.\d+$/.test(v));
+  return found.reduce((a, b) => (newer(b, a) ? b : a), "");
 }
 function saveUpd(patch) {
   try { fs.mkdirSync(HOME, { recursive: true }); fs.writeFileSync(UPD, JSON.stringify({ ...readJson(UPD, {}), ...patch })); } catch {}
@@ -1127,12 +1133,16 @@ async function update(args) {
   if (args[0] === "--finish") return finishUpdate(args[1]);  // run by the newly installed version
   banner("update");
   const latest = latestVersion();
-  if (!latest) die("Couldn't reach npm to check for a new version.");
+  if (!latest) die("Couldn't reach npm or GitHub to check for a new version.");
   saveUpd({ at: Date.now(), latest });
   if (!newer(latest, VERSION)) return good(`You're on the newest version (${VERSION})`);
   info(`${VERSION} → ${c.bold(latest)}`);
   const brew = fs.realpathSync(PKG).includes("/Cellar/");
-  const code = brew ? run("brew", ["upgrade", "coshift"]) : run("npm", ["install", "-g", `coshift@${latest}`]);
+  let code = brew ? run("brew", ["upgrade", "coshift"]) : run("npm", ["install", "-g", `coshift@${latest}`]);
+  if (code && !brew) {  // not on npm yet (it takes a few minutes after a release) or npm is down: the release's tag
+    info("npm doesn't have it yet; installing from GitHub instead…");
+    code = run("npm", ["install", "-g", `github:pgamerx/coshift#v${latest}`]);
+  }
   if (code) die(brew ? "brew upgrade failed" : `npm install failed. If it's a permissions error: ${c.cyan(`sudo npm install -g coshift@${latest}`)}, then ${c.cyan("coshift update")}`);
   process.exit(run("coshift", ["update", "--finish", VERSION]));
 }
